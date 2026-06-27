@@ -90,6 +90,16 @@ Las tools reciben una instancia por nombre, por ejemplo:
 }
 ```
 
+### Validado en esta instalación
+
+- Endpoint MCP: `https://dev-odoo-mcp-gateway.ouiteb.easypanel.host/mcp/`
+- Instancia activa: `Compraloahora`
+- URL Odoo: `https://odoo-concept-compralo-ahora-staging-compraloahora-33072015.dev.odoo.com`
+- Version: `17`
+- API mode: `xmlrpc`
+- `odoo_list_instances`: OK
+- `odoo_test_connection`: OK
+
 ## Seguridad
 
 - No compartas el `MCP_BEARER_TOKEN`.

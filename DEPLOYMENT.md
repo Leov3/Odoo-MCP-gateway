@@ -101,6 +101,22 @@ Para n8n:
 - `MCP Endpoint URL`: `https://tu-dominio/mcp/`
 - `Authentication`: `Bearer Auth` o `Header Auth`
 
+### Validado con n8n
+
+La instalación probada funcionó con:
+
+- `MCP Endpoint URL`: `https://dev-odoo-mcp-gateway.ouiteb.easypanel.host/mcp/`
+- `Authorization`: `Bearer <MCP_BEARER_TOKEN>`
+- Instancia usada en las tools: `Compraloahora`
+- `odoo_list_instances`: OK
+- `odoo_test_connection`: OK
+
+Si el cliente da problemas con `Bearer Auth`, usa `Header Auth` y fuerza este header:
+
+```text
+Authorization: Bearer <MCP_BEARER_TOKEN>
+```
+
 ## 6. Notas operativas
 
 - No subas `.env` al repositorio.
