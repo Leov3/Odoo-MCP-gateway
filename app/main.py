@@ -1,0 +1,590 @@
+from __future__ import annotations
+
+import os
+from contextlib import asynccontextmanager
+from typing import Any
+
+from dotenv import load_dotenv
+from fastapi import FastAPI, Form, Request
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+from starlette.middleware.sessions import SessionMiddleware
+
+from fastmcp.utilities.lifespan import combine_lifespans
+
+from app.db import (
+    ALLOWED_API_MODES,
+    ALLOWED_VERSIONS,
+    get_admin_account,
+    count_active_instances,
+    count_instances,
+    create_instance,
+    delete_instance,
+    get_instance,
+    init_db,
+    list_instances,
+    upsert_admin_account,
+    toggle_instance,
+    update_instance,
+)
+from app.mcp_server import mcp
+from app.security import (
+    encrypt_secret,
+    get_admin_credentials,
+    get_secret_key,
+    hash_admin_password,
+    verify_admin_credentials,
+)
+
+load_dotenv()
+
+templates = Jinja2Templates(directory="app/templates")
+
+mcp_app = mcp.http_app(path="/")
+
+
+@asynccontextmanager
+async def app_lifespan(app: FastAPI):
+    get_secret_key()
+    if not MCP_BEARER_TOKEN:
+        raise RuntimeError("MCP_BEARER_TOKEN is required")
+    init_db()
+    ensure_admin_account()
+    yield
+
+
+app = FastAPI(title="Odoo MCP Gateway", lifespan=combine_lifespans(app_lifespan, mcp_app.lifespan))
+app.add_middleware(SessionMiddleware, secret_key=get_secret_key(), same_site="lax", https_only=False)
+app.mount("/mcp", mcp_app)
+app.mount("/static", StaticFiles(directory="app/static"), name="static")
+
+MCP_BEARER_TOKEN = os.getenv("MCP_BEARER_TOKEN", "").strip()
+
+
+@app.middleware("http")
+async def protect_mcp_endpoint(request: Request, call_next):
+    if request.url.path.startswith("/mcp"):
+        auth_header = request.headers.get("authorization", "")
+        scheme, _, token = auth_header.partition(" ")
+        if scheme.lower() != "bearer" or not token or token != MCP_BEARER_TOKEN:
+            return JSONResponse({"detail": "Unauthorized"}, status_code=401)
+    return await call_next(request)
+
+
+def flash(request: Request, message: str, category: str = "info") -> None:
+    request.session.setdefault("flashes", []).append({"message": message, "category": category})
+
+
+def pop_flashes(request: Request) -> list[dict[str, str]]:
+    flashes = request.session.pop("flashes", [])
+    return flashes if isinstance(flashes, list) else []
+
+
+def suggest_api_mode(version: str | None) -> str:
+    return "json2" if str(version) == "19" else "xmlrpc"
+
+
+def ensure_admin_account() -> None:
+    if get_admin_account():
+        return
+    default_username, default_password = get_admin_credentials()
+    password_salt, password_hash = hash_admin_password(default_password)
+    upsert_admin_account(default_username, password_salt, password_hash)
+
+
+def render_template(
+    request: Request,
+    template_name: str,
+    context: dict[str, Any] | None = None,
+) -> HTMLResponse:
+    payload = {
+        "request": request,
+        "flashes": pop_flashes(request),
+        "is_authenticated": request.session.get("admin_logged_in", False),
+        "admin_username": request.session.get("admin_username"),
+        "suggest_api_mode": suggest_api_mode,
+    }
+    if context:
+        payload.update(context)
+    return templates.TemplateResponse(request, template_name, payload)
+
+
+def require_admin(request: Request):
+    if not request.session.get("admin_logged_in"):
+        return RedirectResponse(url="/admin/login", status_code=303)
+    return None
+
+
+@app.get("/", include_in_schema=False)
+def root() -> RedirectResponse:
+    return RedirectResponse(url="/admin", status_code=303)
+
+
+@app.get("/health")
+def health() -> dict[str, str]:
+    return {"status": "ok"}
+
+
+@app.get("/admin/login", response_class=HTMLResponse)
+def admin_login_get(request: Request):
+    if request.session.get("admin_logged_in"):
+        return RedirectResponse(url="/admin", status_code=303)
+    return render_template(request, "login.html")
+
+
+@app.post("/admin/login", response_class=HTMLResponse)
+def admin_login_post(
+    request: Request,
+    username: str = Form(...),
+    password: str = Form(...),
+):
+    if verify_admin_credentials(username.strip(), password):
+        request.session["admin_logged_in"] = True
+        request.session["admin_username"] = username.strip()
+        flash(request, "Login successful", "success")
+        return RedirectResponse(url="/admin", status_code=303)
+    flash(request, "Invalid username or password", "error")
+    return render_template(request, "login.html", {"username": username})
+
+
+@app.get("/admin", response_class=HTMLResponse)
+def admin_dashboard(request: Request):
+    redirect = require_admin(request)
+    if redirect:
+        return redirect
+    return render_template(
+        request,
+        "dashboard.html",
+        {
+            "total_instances": count_instances(),
+            "active_instances": count_active_instances(),
+            "mcp_endpoint": "/mcp",
+            "mcp_warning": "Do not share the MCP bearer token.",
+            "admin_username": request.session.get("admin_username"),
+        },
+    )
+
+
+@app.get("/admin/settings", response_class=HTMLResponse)
+def admin_settings_get(request: Request):
+    redirect = require_admin(request)
+    if redirect:
+        return redirect
+    account = get_admin_account()
+    return render_template(
+        request,
+        "settings.html",
+        {
+            "account": account,
+            "form_username": account["username"] if account else "",
+        },
+    )
+
+
+@app.post("/admin/settings", response_class=HTMLResponse)
+def admin_settings_post(
+    request: Request,
+    username: str = Form(...),
+    current_password: str = Form(...),
+    new_password: str = Form(""),
+    confirm_new_password: str = Form(""),
+):
+    redirect = require_admin(request)
+    if redirect:
+        return redirect
+
+    account = get_admin_account()
+    if not account:
+        flash(request, "Admin account not initialized", "error")
+        return RedirectResponse(url="/admin/settings", status_code=303)
+
+    if not verify_admin_credentials(account["username"], current_password):
+        return render_template(
+            request,
+            "settings.html",
+            {
+                "account": account,
+                "form_username": username,
+                "errors": ["Current password is incorrect"],
+            },
+        )
+
+    username = username.strip()
+    if not username:
+        return render_template(
+            request,
+            "settings.html",
+            {
+                "account": account,
+                "form_username": username,
+                "errors": ["Username is required"],
+            },
+        )
+
+    if new_password or confirm_new_password:
+        if new_password != confirm_new_password:
+            return render_template(
+                request,
+                "settings.html",
+                {
+                    "account": account,
+                    "form_username": username,
+                    "errors": ["New password and confirmation do not match"],
+                },
+            )
+        password_salt, password_hash = hash_admin_password(new_password)
+    else:
+        password_salt = account["password_salt"]
+        password_hash = account["password_hash"]
+
+    try:
+        upsert_admin_account(username, password_salt, password_hash)
+        request.session["admin_username"] = username
+        flash(request, "Account updated successfully", "success")
+        return RedirectResponse(url="/admin/settings", status_code=303)
+    except Exception as exc:
+        return render_template(
+            request,
+            "settings.html",
+            {
+                "account": account,
+                "form_username": username,
+                "errors": [str(exc)],
+            },
+        )
+
+
+@app.post("/admin/logout")
+def admin_logout(request: Request):
+    request.session.clear()
+    request.session["flashes"] = [{"message": "Logged out", "category": "info"}]
+    return RedirectResponse(url="/admin/login", status_code=303)
+
+
+@app.get("/admin/instances", response_class=HTMLResponse)
+def instances_list(request: Request):
+    redirect = require_admin(request)
+    if redirect:
+        return redirect
+    return render_template(
+        request,
+        "instances.html",
+        {
+            "instances": list_instances(active_only=False),
+        },
+    )
+
+
+def _validate_instance_form(
+    name: str,
+    url: str,
+    database_name: str,
+    username: str,
+    secret: str,
+    version: str,
+    api_mode: str,
+    is_edit: bool = False,
+) -> tuple[dict[str, Any] | None, list[str]]:
+    errors: list[str] = []
+    values = {
+        "name": name.strip(),
+        "url": url.strip(),
+        "database_name": database_name.strip(),
+        "username": username.strip(),
+        "version": version.strip(),
+        "api_mode": api_mode.strip(),
+    }
+
+    for field, value in values.items():
+        if not value:
+            errors.append(f"{field.replace('_', ' ').title()} is required")
+
+    if values["version"] and values["version"] not in ALLOWED_VERSIONS:
+        errors.append("Version must be 16, 17, 18, or 19")
+
+    if values["api_mode"] and values["api_mode"] not in ALLOWED_API_MODES:
+        errors.append("API mode must be xmlrpc or json2")
+
+    if not is_edit and not secret.strip():
+        errors.append("Secret is required")
+
+    if errors:
+        return None, errors
+
+    if secret.strip():
+        values["secret_encrypted"] = encrypt_secret(secret.strip())
+    return values, []
+
+
+@app.get("/admin/instances/new", response_class=HTMLResponse)
+def instance_new_get(request: Request):
+    redirect = require_admin(request)
+    if redirect:
+        return redirect
+    default_version = "19"
+    return render_template(
+        request,
+        "instance_form.html",
+        {
+            "form_title": "Create instance",
+            "form_action": "/admin/instances/new",
+            "instance": {
+                "name": "",
+                "url": "",
+                "database_name": "",
+                "username": "",
+                "version": default_version,
+                "api_mode": suggest_api_mode(default_version),
+                "secret": "",
+                "active": True,
+            },
+            "versions": sorted(ALLOWED_VERSIONS),
+            "api_modes": sorted(ALLOWED_API_MODES),
+            "is_edit": False,
+        },
+    )
+
+
+@app.post("/admin/instances/new", response_class=HTMLResponse)
+def instance_new_post(
+    request: Request,
+    name: str = Form(...),
+    url: str = Form(...),
+    database_name: str = Form(...),
+    username: str = Form(...),
+    secret: str = Form(""),
+    version: str = Form(...),
+    api_mode: str = Form(...),
+    active: str | None = Form(None),
+):
+    redirect = require_admin(request)
+    if redirect:
+        return redirect
+    values, errors = _validate_instance_form(name, url, database_name, username, secret, version, api_mode)
+    if errors:
+        return render_template(
+            request,
+            "instance_form.html",
+            {
+                "form_title": "Create instance",
+                "form_action": "/admin/instances/new",
+                "instance": {
+                    "name": name,
+                    "url": url,
+                    "database_name": database_name,
+                    "username": username,
+                    "version": version,
+                    "api_mode": api_mode,
+                    "secret": "",
+                    "active": active is not None,
+                },
+                "versions": sorted(ALLOWED_VERSIONS),
+                "api_modes": sorted(ALLOWED_API_MODES),
+                "errors": errors,
+                "is_edit": False,
+            },
+        )
+    try:
+        values["active"] = active is not None
+        create_instance(values)
+        flash(request, "Instance created successfully", "success")
+        return RedirectResponse(url="/admin/instances", status_code=303)
+    except Exception as exc:
+        return render_template(
+            request,
+            "instance_form.html",
+            {
+                "form_title": "Create instance",
+                "form_action": "/admin/instances/new",
+                "instance": {
+                    "name": name,
+                    "url": url,
+                    "database_name": database_name,
+                    "username": username,
+                    "version": version,
+                    "api_mode": api_mode,
+                    "secret": "",
+                    "active": active is not None,
+                },
+                "versions": sorted(ALLOWED_VERSIONS),
+                "api_modes": sorted(ALLOWED_API_MODES),
+                "errors": [str(exc)],
+                "is_edit": False,
+            },
+        )
+
+
+@app.get("/admin/instances/{instance_id}/edit", response_class=HTMLResponse)
+def instance_edit_get(request: Request, instance_id: int):
+    redirect = require_admin(request)
+    if redirect:
+        return redirect
+    instance = get_instance(instance_id)
+    if not instance:
+        flash(request, "Instance not found", "error")
+        return RedirectResponse(url="/admin/instances", status_code=303)
+    return render_template(
+        request,
+        "instance_form.html",
+        {
+            "form_title": "Edit instance",
+            "form_action": f"/admin/instances/{instance_id}/edit",
+            "instance": {
+                **instance,
+                "secret": "",
+            },
+            "versions": sorted(ALLOWED_VERSIONS),
+            "api_modes": sorted(ALLOWED_API_MODES),
+            "is_edit": True,
+        },
+    )
+
+
+@app.post("/admin/instances/{instance_id}/edit", response_class=HTMLResponse)
+def instance_edit_post(
+    request: Request,
+    instance_id: int,
+    name: str = Form(...),
+    url: str = Form(...),
+    database_name: str = Form(...),
+    username: str = Form(...),
+    secret: str = Form(""),
+    version: str = Form(...),
+    api_mode: str = Form(...),
+    active: str | None = Form(None),
+):
+    redirect = require_admin(request)
+    if redirect:
+        return redirect
+    instance = get_instance(instance_id)
+    if not instance:
+        flash(request, "Instance not found", "error")
+        return RedirectResponse(url="/admin/instances", status_code=303)
+    values, errors = _validate_instance_form(
+        name, url, database_name, username, secret, version, api_mode, is_edit=True
+    )
+    if errors:
+        return render_template(
+            request,
+            "instance_form.html",
+            {
+                "form_title": "Edit instance",
+                "form_action": f"/admin/instances/{instance_id}/edit",
+                "instance": {
+                    "id": instance_id,
+                    "name": name,
+                    "url": url,
+                    "database_name": database_name,
+                    "username": username,
+                    "version": version,
+                    "api_mode": api_mode,
+                    "secret": "",
+                    "active": active is not None,
+                },
+                "versions": sorted(ALLOWED_VERSIONS),
+                "api_modes": sorted(ALLOWED_API_MODES),
+                "errors": errors,
+                "is_edit": True,
+            },
+        )
+    try:
+        values["active"] = active is not None
+        if not secret.strip():
+            values.pop("secret_encrypted", None)
+        update_instance(instance_id, values)
+        flash(request, "Instance updated successfully", "success")
+        return RedirectResponse(url="/admin/instances", status_code=303)
+    except Exception as exc:
+        return render_template(
+            request,
+            "instance_form.html",
+            {
+                "form_title": "Edit instance",
+                "form_action": f"/admin/instances/{instance_id}/edit",
+                "instance": {
+                    "id": instance_id,
+                    "name": name,
+                    "url": url,
+                    "database_name": database_name,
+                    "username": username,
+                    "version": version,
+                    "api_mode": api_mode,
+                    "secret": "",
+                    "active": active is not None,
+                },
+                "versions": sorted(ALLOWED_VERSIONS),
+                "api_modes": sorted(ALLOWED_API_MODES),
+                "errors": [str(exc)],
+                "is_edit": True,
+            },
+        )
+
+
+def _get_instance_or_flash(request: Request, instance_id: int):
+    instance = get_instance(instance_id)
+    if not instance:
+        flash(request, "Instance not found", "error")
+        return None
+    return instance
+
+
+@app.post("/admin/instances/{instance_id}/test")
+def instance_test(request: Request, instance_id: int):
+    redirect = require_admin(request)
+    if redirect:
+        return redirect
+    instance = _get_instance_or_flash(request, instance_id)
+    if not instance:
+        return RedirectResponse(url="/admin/instances", status_code=303)
+    from app.odoo_client import OdooClient, OdooInstanceConfig
+
+    try:
+        client = OdooClient(
+            OdooInstanceConfig(
+                url=instance["url"],
+                database_name=instance["database_name"],
+                username=instance["username"],
+                secret_encrypted=instance["secret_encrypted"],
+                version=instance["version"],
+                api_mode=instance["api_mode"],
+            )
+        )
+        if instance["api_mode"] == "xmlrpc":
+            client.authenticate()
+        else:
+            client.search_read("res.partner", [], ["id"], limit=1)
+        flash(request, f'Connection test successful for "{instance["name"]}"', "success")
+    except Exception as exc:
+        flash(request, f'Connection test failed for "{instance["name"]}": {exc}', "error")
+    return RedirectResponse(url="/admin/instances", status_code=303)
+
+
+@app.post("/admin/instances/{instance_id}/toggle")
+def instance_toggle(request: Request, instance_id: int):
+    redirect = require_admin(request)
+    if redirect:
+        return redirect
+    instance = _get_instance_or_flash(request, instance_id)
+    if not instance:
+        return RedirectResponse(url="/admin/instances", status_code=303)
+    toggle_instance(instance_id)
+    flash(
+        request,
+        f'Instance "{instance["name"]}" {"activated" if not instance["active"] else "deactivated"}',
+        "success",
+    )
+    return RedirectResponse(url="/admin/instances", status_code=303)
+
+
+@app.post("/admin/instances/{instance_id}/delete")
+def instance_delete(request: Request, instance_id: int):
+    redirect = require_admin(request)
+    if redirect:
+        return redirect
+    instance = _get_instance_or_flash(request, instance_id)
+    if not instance:
+        return RedirectResponse(url="/admin/instances", status_code=303)
+    delete_instance(instance_id)
+    flash(request, f'Instance "{instance["name"]}" deleted', "success")
+    return RedirectResponse(url="/admin/instances", status_code=303)

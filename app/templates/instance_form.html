@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% block title %}{{ form_title }} - Odoo MCP Gateway{% endblock %}
+{% block header %}{{ form_title }}{% endblock %}
+{% block content %}
+<section class="panel">
+  {% if errors %}
+    <div class="alert alert-error">
+      {% for error in errors %}
+        <div>{{ error }}</div>
+      {% endfor %}
+    </div>
+  {% endif %}
+
+  <form method="post" action="{{ form_action }}" class="form-grid">
+    <label>
+      Name
+      <input type="text" name="name" value="{{ instance.name }}" required>
+    </label>
+    <label>
+      URL
+      <input type="url" name="url" value="{{ instance.url }}" placeholder="https://odoo.example.com" required>
+    </label>
+    <label>
+      Database name
+      <input type="text" name="database_name" value="{{ instance.database_name }}" required>
+    </label>
+    <label>
+      Username
+      <input type="text" name="username" value="{{ instance.username }}" required>
+    </label>
+    <label>
+      Secret
+      <input type="password" name="secret" value="" {% if not is_edit %}required{% endif %}>
+      <small>{% if is_edit %}Leave empty to keep the current secret.{% else %}Stored encrypted with Fernet.{% endif %}</small>
+    </label>
+    <label>
+      Version
+      <select name="version" id="version-select" required>
+        {% for version in versions %}
+          <option value="{{ version }}" {% if instance.version == version %}selected{% endif %}>{{ version }}</option>
+        {% endfor %}
+      </select>
+      <small>Suggested API mode: <strong id="suggested-mode">{{ suggest_api_mode(instance.version) }}</strong></small>
+    </label>
+    <label>
+      API mode
+      <select name="api_mode" id="api-mode-select" required>
+        {% for mode in api_modes %}
+          <option value="{{ mode }}" {% if instance.api_mode == mode %}selected{% endif %}>{{ mode }}</option>
+        {% endfor %}
+      </select>
+      <small>16-18 usually use xmlrpc. 19 usually uses json2.</small>
+    </label>
+    <label class="checkbox">
+      <input type="checkbox" name="active" {% if instance.active %}checked{% endif %}>
+      Active
+    </label>
+    <div class="form-actions">
+      <button type="submit">Save</button>
+      <a href="/admin/instances" class="button-link secondary">Cancel</a>
+    </div>
+  </form>
+</section>
+<script>
+  const versionSelect = document.getElementById('version-select');
+  const apiModeSelect = document.getElementById('api-mode-select');
+  const suggestedMode = document.getElementById('suggested-mode');
+
+  function updateSuggestion() {
+    const version = versionSelect.value;
+    const mode = version === '19' ? 'json2' : 'xmlrpc';
+    suggestedMode.textContent = mode;
+  }
+
+  versionSelect.addEventListener('change', function () {
+    updateSuggestion();
+  });
+
+  updateSuggestion();
+</script>
+{% endblock %}
+

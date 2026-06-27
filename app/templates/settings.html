@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}Settings - Odoo MCP Gateway{% endblock %}
+{% block header %}User Settings{% endblock %}
+{% block content %}
+<section class="panel">
+  <div class="panel-header">
+    <div>
+      <h2>Admin account</h2>
+      <p class="muted">Update the username and password for the single admin account.</p>
+    </div>
+  </div>
+
+  {% if errors %}
+    <div class="alert alert-error">
+      {% for error in errors %}
+        <div>{{ error }}</div>
+      {% endfor %}
+    </div>
+  {% endif %}
+
+  <form method="post" action="/admin/settings" class="form-grid">
+    <label>
+      Username
+      <input type="text" name="username" value="{{ form_username or (account.username if account else '') }}" required>
+    </label>
+    <label>
+      Current password
+      <input type="password" name="current_password" autocomplete="current-password" required>
+    </label>
+    <label>
+      New password
+      <input type="password" name="new_password" autocomplete="new-password">
+      <small>Leave blank to keep the current password.</small>
+    </label>
+    <label>
+      Confirm new password
+      <input type="password" name="confirm_new_password" autocomplete="new-password">
+    </label>
+    <div class="form-actions">
+      <button type="submit">Save changes</button>
+      <a href="/admin" class="button-link secondary">Cancel</a>
+    </div>
+  </form>
+</section>
+{% endblock %}

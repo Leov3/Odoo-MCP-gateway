@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}Dashboard - Odoo MCP Gateway{% endblock %}
+{% block header %}Dashboard{% endblock %}
+{% block content %}
+<section class="cards">
+  <article class="card">
+    <span class="card-label">Total instances</span>
+    <strong>{{ total_instances }}</strong>
+  </article>
+  <article class="card">
+    <span class="card-label">Active instances</span>
+    <strong>{{ active_instances }}</strong>
+  </article>
+  <article class="card">
+    <span class="card-label">MCP endpoint</span>
+    <strong>{{ mcp_endpoint }}</strong>
+  </article>
+</section>
+
+<section class="panel">
+  <h2>Security notice</h2>
+  <p class="muted">{{ mcp_warning }}</p>
+</section>
+{% endblock %}
+

@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Odoo MCP Gateway{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', path='style.css') }}">
+</head>
+<body>
+  <div class="shell">
+    {% if is_authenticated %}
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">Odoo MCP Gateway</p>
+        <h1>{% block header %}Admin Panel{% endblock %}</h1>
+        {% if admin_username %}
+          <p class="muted">Signed in as {{ admin_username }}</p>
+        {% endif %}
+      </div>
+      <nav class="nav">
+        <a href="/admin">Dashboard</a>
+        <a href="/admin/instances">Instances</a>
+        <a href="/admin/settings">Settings</a>
+        <a href="/admin/instances/new" class="button-link">New instance</a>
+        <form method="post" action="/admin/logout" class="inline-form">
+          <button type="submit" class="secondary-button">Logout</button>
+        </form>
+      </nav>
+    </header>
+    {% endif %}
+
+    {% for flash in flashes %}
+      <div class="alert alert-{{ flash.category }}">{{ flash.message }}</div>
+    {% endfor %}
+
+    <main class="content">
+      {% block content %}{% endblock %}
+    </main>
+  </div>
+</body>
+</html>

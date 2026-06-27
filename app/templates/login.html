@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}Login - Odoo MCP Gateway{% endblock %}
+{% block header %}Admin Login{% endblock %}
+{% block content %}
+<section class="panel login-panel">
+  <form method="post" action="/admin/login" class="form-card">
+    <label>
+      Username
+      <input type="text" name="username" value="{{ username or '' }}" autocomplete="username" required>
+    </label>
+    <label>
+      Password
+      <input type="password" name="password" autocomplete="current-password" required>
+    </label>
+    <button type="submit">Sign in</button>
+  </form>
+</section>
+{% endblock %}
+

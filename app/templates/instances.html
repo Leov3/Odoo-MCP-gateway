@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block title %}Instances - Odoo MCP Gateway{% endblock %}
+{% block header %}Instances{% endblock %}
+{% block content %}
+<section class="panel">
+  <div class="panel-header">
+    <h2>Configured instances</h2>
+    <a href="/admin/instances/new" class="button-link">Add instance</a>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>URL</th>
+          <th>Database</th>
+          <th>Username</th>
+          <th>Version</th>
+          <th>API mode</th>
+          <th>Active</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for instance in instances %}
+        <tr>
+          <td>{{ instance.name }}</td>
+          <td><span class="mono">{{ instance.url }}</span></td>
+          <td>{{ instance.database_name }}</td>
+          <td>{{ instance.username }}</td>
+          <td>{{ instance.version }}</td>
+          <td>{{ instance.api_mode }}</td>
+          <td>
+            {% if instance.active %}
+              <span class="badge badge-success">Yes</span>
+            {% else %}
+              <span class="badge">No</span>
+            {% endif %}
+          </td>
+          <td>
+            <div class="actions">
+              <a href="/admin/instances/{{ instance.id }}/edit">Edit</a>
+              <form method="post" action="/admin/instances/{{ instance.id }}/test">
+                <button type="submit">Test</button>
+              </form>
+              <form method="post" action="/admin/instances/{{ instance.id }}/toggle">
+                <button type="submit">{% if instance.active %}Deactivate{% else %}Activate{% endif %}</button>
+              </form>
+              <form method="post" action="/admin/instances/{{ instance.id }}/delete" onsubmit="return confirm('Delete this instance?');">
+                <button type="submit" class="danger">Delete</button>
+              </form>
+            </div>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}
+
