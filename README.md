@@ -55,7 +55,7 @@ Ver [Guia de despliegue](./DEPLOYMENT.md).
 Usa el endpoint:
 
 ```text
-https://tu-dominio/mcp
+https://tu-dominio/mcp/
 ```
 
 El endpoint requiere este encabezado:
@@ -67,7 +67,27 @@ Authorization: Bearer <MCP_BEARER_TOKEN>
 Ejemplo:
 
 ```bash
-curl -H "Authorization: Bearer change_me_long_random_token" https://tu-dominio/mcp
+curl -H "Authorization: Bearer change_me_long_random_token" https://tu-dominio/mcp/
+```
+
+### n8n
+
+Para n8n usa `MCP Client` con:
+
+- `Server Transport`: `HTTP Streamable`
+- `MCP Endpoint URL`: `https://tu-dominio/mcp/`
+- `Authentication`: `Bearer Auth` o `Header Auth`
+- Token o header:
+  - `Authorization: Bearer <MCP_BEARER_TOKEN>`
+
+Si el nodo falla con auth, usa `Header Auth` para forzar exactamente ese header.
+
+Las tools reciben una instancia por nombre, por ejemplo:
+
+```json
+{
+  "instance": "Compraloahora"
+}
 ```
 
 ## Seguridad

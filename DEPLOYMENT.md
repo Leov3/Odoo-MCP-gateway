@@ -74,13 +74,14 @@ Después del deploy confirma:
 - `GET /admin/login` carga el panel
 - `GET /admin/settings` permite cambiar usuario y contraseña
 - `GET /mcp` responde `401` sin token
+- `POST /mcp/` con bearer válido responde como endpoint MCP
 
 ## 5. Conectar un cliente MCP
 
 Usa el endpoint:
 
 ```text
-https://tu-dominio/mcp
+https://tu-dominio/mcp/
 ```
 
 Incluye este header:
@@ -89,10 +90,20 @@ Incluye este header:
 Authorization: Bearer <MCP_BEARER_TOKEN>
 ```
 
+Nota:
+
+- usa la barra final `/mcp/`
+- si el cliente no soporta `Bearer Auth`, fuerza el header manualmente como `Authorization: Bearer <MCP_BEARER_TOKEN>`
+
+Para n8n:
+
+- `Server Transport`: `HTTP Streamable`
+- `MCP Endpoint URL`: `https://tu-dominio/mcp/`
+- `Authentication`: `Bearer Auth` o `Header Auth`
+
 ## 6. Notas operativas
 
 - No subas `.env` al repositorio.
 - No borres el volumen `/data` si quieres conservar las instancias.
 - El panel usa una sola cuenta admin.
 - El secreto de cada instancia se guarda cifrado.
-
