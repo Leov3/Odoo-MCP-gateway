@@ -48,14 +48,7 @@ Desde `Settings` puedes cambiar el nombre de usuario y la contraseña del único
 
 ## Configurar Easypanel
 
-1. Crea un nuevo servicio desde este repositorio.
-2. Usa el `Dockerfile` incluido.
-3. Expón el puerto `8000`.
-4. Agrega las variables de entorno del `.env`.
-5. Monta el volumen persistente en `/data`.
-6. Despliega el servicio.
-
-La base SQLite se guarda en `/data/app.db`.
+Ver [Guia de despliegue](./DEPLOYMENT.md).
 
 ## Conectar un cliente MCP
 
