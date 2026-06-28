@@ -549,6 +549,13 @@ def _partner_fields() -> list[str]:
     ]
 
 
+def _normalize_partner_name(name: str | None) -> str:
+    normalized = (name or "").strip()
+    if not normalized:
+        raise ValueError("Partner name cannot be empty")
+    return normalized
+
+
 @mcp.tool
 def odoo_test_connection(request: Request = CurrentRequest()) -> dict[str, Any]:
     try:
@@ -580,6 +587,53 @@ def odoo_search_partners(
             limit=limit_value,
         )
         return {"success": True, "count": len(results), "results": results}
+    except Exception as exc:
+        return _tool_error(str(exc))
+
+
+@mcp.tool
+def odoo_create_partner(
+    name: str,
+    email: str | None = None,
+    phone: str | None = None,
+    mobile: str | None = None,
+    street: str | None = None,
+    city: str | None = None,
+    zip_code: str | None = None,
+    vat: str | None = None,
+    company_type: str | None = None,
+    category_ids: list[int] | None = None,
+    request: Request = CurrentRequest(),
+) -> dict[str, Any]:
+    try:
+        instance = _instance_from_request(request)
+        client = _client_from_instance(instance)
+        values: dict[str, Any] = {
+            "name": _normalize_partner_name(name),
+            "customer_rank": 1,
+        }
+        if email:
+            values["email"] = email.strip()
+        if phone:
+            values["phone"] = phone.strip()
+        if mobile:
+            values["mobile"] = mobile.strip()
+        if street:
+            values["street"] = street.strip()
+        if city:
+            values["city"] = city.strip()
+        if zip_code:
+            values["zip"] = zip_code.strip()
+        if vat:
+            values["vat"] = vat.strip()
+        if company_type in {"person", "company"}:
+            values["company_type"] = company_type
+        if category_ids is not None:
+            values["category_id"] = [(6, 0, [int(category_id) for category_id in category_ids])]
+
+        partner_id = client.create("res.partner", values)
+        partner = _read_single_record(client, "res.partner", partner_id, _partner_fields())
+        return {"success": True, "created": True, "partner_id": partner_id, "record": partner}
     except Exception as exc:
         return _tool_error(str(exc))
 

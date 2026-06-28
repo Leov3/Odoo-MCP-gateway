@@ -161,6 +161,24 @@ class OdooClientRpcTests(unittest.TestCase):
         self.assertIn("/json/2/sale.order/create", captured["url"])
         self.assertEqual(captured["json"], {"vals_list": [{"partner_id": 5}]})
 
+    def test_json2_partner_create_sends_customer_rank(self) -> None:
+        client = self._make_client(api_mode="json2")
+
+        captured = {}
+
+        def fake_post(url, headers=None, json=None, timeout=None):
+            captured["url"] = url
+            captured["headers"] = headers
+            captured["json"] = json
+            return FakeResponse(123)
+
+        with patch("app.odoo_client.requests.post", side_effect=fake_post):
+            result = client.create("res.partner", {"name": "Cliente Demo", "customer_rank": 1})
+
+        self.assertEqual(result, 123)
+        self.assertIn("/json/2/res.partner/create", captured["url"])
+        self.assertEqual(captured["json"], {"vals_list": [{"name": "Cliente Demo", "customer_rank": 1}]})
+
     def test_json2_write_sends_ids_and_vals(self) -> None:
         client = self._make_client(api_mode="json2")
 

@@ -92,6 +92,7 @@ Tools expuestas actualmente:
 - `odoo_search_leads`
 - `odoo_create_lead`
 - `odoo_search_sale_orders`
+- `odoo_create_partner`
 - `odoo_search_products`
 - `odoo_search_products_by_sku`
 - `odoo_search_products_by_category`
