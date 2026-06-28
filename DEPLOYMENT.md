@@ -67,6 +67,8 @@ No necesitas comandos extra. El contenedor arranca con:
 uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
+El `Dockerfile` ya habilita `--proxy-headers` para que `request.base_url` refleje el dominio público cuando el servicio está detrás de un proxy inverso.
+
 ## 4. Verificaciones
 
 Después del deploy confirma:
