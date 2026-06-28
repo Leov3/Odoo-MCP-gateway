@@ -85,6 +85,36 @@ Si el nodo falla con `Bearer Auth`, cambia a `Header Auth` para forzar exactamen
 
 Las tools ya quedan ligadas a la instancia del endpoint, así que no necesitas pasar `instance` en cada llamada.
 
+Tools expuestas actualmente:
+
+- `odoo_test_connection`
+- `odoo_search_partners`
+- `odoo_search_leads`
+- `odoo_create_lead`
+- `odoo_search_sale_orders`
+- `odoo_search_products`
+- `odoo_search_products_by_sku`
+- `odoo_search_products_by_category`
+- `odoo_search_product_variants`
+- `odoo_search_products_by_stock`
+- `odoo_get_partner`
+- `odoo_update_partner`
+- `odoo_get_product`
+- `odoo_get_product_pricing`
+- `odoo_get_stock_availability`
+- `odoo_get_sale_order`
+- `odoo_create_quotation`
+- `odoo_add_quotation_line`
+- `odoo_update_quotation_line`
+- `odoo_confirm_quotation`
+- `odoo_send_quotation`
+- `odoo_cancel_sale_order`
+- `odoo_update_lead_stage`
+- `odoo_set_next_activity`
+- `odoo_log_note`
+- `odoo_search_pipeline`
+- `odoo_search_my_activities`
+
 ### Validado en esta instalación
 
 - Endpoint MCP: `https://dev-odoo-mcp-gateway.ouiteb.easypanel.host/compraloahora/mcp/`

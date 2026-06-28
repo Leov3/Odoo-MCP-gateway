@@ -65,6 +65,10 @@ class OdooClient:
         self.api_mode = instance.api_mode
         self._uid: int | None = None
 
+    @property
+    def uid(self) -> int | None:
+        return self._uid
+
     def _endpoint(self, suffix: str) -> str:
         return urljoin(f"{self.base_url}/", suffix.lstrip("/"))
 
@@ -89,6 +93,19 @@ class OdooClient:
         if self.database_name:
             headers["X-Odoo-Database"] = self.database_name
         return headers
+
+    def _json_request(self, model: str, method: str, payload: dict[str, Any]) -> Any:
+        response = requests.post(
+            self._endpoint(f"json/2/{model}/{method}"),
+            headers=self._json_headers(),
+            json=payload,
+            timeout=30,
+        )
+        if not response.ok:
+            raise OdooClientError(
+                _json_error_message(response, f"JSON-2 {method} failed for {model}")
+            )
+        return response.json()
 
     def authenticate(self) -> int:
         if self.api_mode == "json2":
@@ -115,6 +132,49 @@ class OdooClient:
             raise OdooClientError("XML-RPC authentication failed: invalid credentials")
         self._uid = int(uid)
         return self._uid
+
+    def read(
+        self,
+        model: str,
+        ids: list[int],
+        fields: list[str],
+        load: Any | None = None,
+    ) -> list[dict[str, Any]]:
+        if not ids:
+            return []
+
+        if self.api_mode == "json2":
+            payload: dict[str, Any] = {
+                "ids": ids,
+                "fields": fields,
+                "context": {"lang": "en_US"},
+            }
+            if load is not None:
+                payload["load"] = load
+            result = self._json_request(model, "read", payload)
+            if not isinstance(result, list):
+                raise OdooClientError(
+                    f"JSON-2 read for {model} returned an unexpected payload"
+                )
+            return result
+
+        uid = self._uid or self.authenticate()
+        object_proxy = self._xmlrpc_object()
+        try:
+            result = object_proxy.execute_kw(
+                self.database_name,
+                uid,
+                self.secret,
+                model,
+                "read",
+                [ids],
+                {"fields": fields, **({"load": load} if load is not None else {})},
+            )
+        except Exception as exc:  # pragma: no cover - network/remote error
+            raise OdooClientError(f"XML-RPC read failed for {model}: {exc}") from exc
+        if not isinstance(result, list):
+            raise OdooClientError(f"XML-RPC read for {model} returned an unexpected payload")
+        return result
 
     def search_read(
         self,
@@ -167,17 +227,8 @@ class OdooClient:
 
     def create(self, model: str, values: dict[str, Any]) -> int:
         if self.api_mode == "json2":
-            response = requests.post(
-                self._endpoint(f"json/2/{model}/create"),
-                headers=self._json_headers(),
-                json=values,
-                timeout=30,
-            )
-            if not response.ok:
-                raise OdooClientError(
-                    _json_error_message(response, f"JSON-2 create failed for {model}")
-                )
-            payload = _unwrap_json2_payload(response.json())
+            payload = self._json_request(model, "create", {"vals_list": [values]})
+            payload = _unwrap_json2_payload(payload)
             if isinstance(payload, int):
                 return payload
             if isinstance(payload, dict) and "id" in payload:
@@ -204,3 +255,78 @@ class OdooClient:
         except Exception as exc:  # pragma: no cover - network/remote error
             raise OdooClientError(f"XML-RPC create failed for {model}: {exc}") from exc
         return int(result)
+
+    def write(self, model: str, ids: list[int], values: dict[str, Any]) -> bool:
+        if not ids:
+            return False
+
+        if self.api_mode == "json2":
+            payload = {
+                "ids": ids,
+                "vals": values,
+                "context": {"lang": "en_US"},
+            }
+            result = self._json_request(model, "write", payload)
+            if isinstance(result, bool):
+                return result
+            if isinstance(result, dict) and "result" in result:
+                return bool(result["result"])
+            return bool(result)
+
+        uid = self._uid or self.authenticate()
+        object_proxy = self._xmlrpc_object()
+        try:
+            result = object_proxy.execute_kw(
+                self.database_name,
+                uid,
+                self.secret,
+                model,
+                "write",
+                [ids, values],
+            )
+        except Exception as exc:  # pragma: no cover - network/remote error
+            raise OdooClientError(f"XML-RPC write failed for {model}: {exc}") from exc
+        return bool(result)
+
+    def call_method(
+        self,
+        model: str,
+        method: str,
+        ids: list[int] | None = None,
+        args: list[Any] | None = None,
+        kwargs: dict[str, Any] | None = None,
+    ) -> Any:
+        kwargs = dict(kwargs or {})
+
+        if self.api_mode == "json2":
+            if args:
+                raise OdooClientError(
+                    "JSON-2 call_method does not support positional arguments"
+                )
+            payload: dict[str, Any] = {"context": {"lang": "en_US"}, **kwargs}
+            if ids is not None:
+                payload["ids"] = ids
+            return self._json_request(model, method, payload)
+
+        uid = self._uid or self.authenticate()
+        object_proxy = self._xmlrpc_object()
+        rpc_args: list[Any] = []
+        if ids is not None:
+            rpc_args.append(ids)
+        if args:
+            rpc_args.extend(args)
+        try:
+            result = object_proxy.execute_kw(
+                self.database_name,
+                uid,
+                self.secret,
+                model,
+                method,
+                rpc_args,
+                kwargs,
+            )
+        except Exception as exc:  # pragma: no cover - network/remote error
+            raise OdooClientError(
+                f"XML-RPC call_method failed for {model}.{method}: {exc}"
+            ) from exc
+        return result
