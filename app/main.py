@@ -73,10 +73,30 @@ class InstanceMCPMiddleware:
         suffix = "/" + "/".join(segments[2:]) if len(segments) > 2 else "/"
         return slug, suffix
 
-    def _is_authorized(self, headers: Headers) -> bool:
+    def _normalize_token(self, value: str) -> str:
+        token = (value or "").strip()
+        for _ in range(2):
+            if token.lower().startswith("bearer "):
+                token = token[7:].strip()
+        return token
+
+    def _candidate_tokens(self, headers: Headers) -> list[str]:
+        candidates: list[str] = []
         auth_header = headers.get("authorization", "")
-        scheme, _, token = auth_header.partition(" ")
-        return scheme.lower() == "bearer" and bool(token) and token == MCP_BEARER_TOKEN
+        if auth_header:
+            scheme, _, token = auth_header.partition(" ")
+            if scheme.lower() == "bearer" and token:
+                candidates.append(self._normalize_token(token))
+            else:
+                candidates.append(self._normalize_token(auth_header))
+        for header_name in ("proxy-authorization", "x-mcp-token", "x-api-key", "x-auth-token"):
+            header_value = headers.get(header_name, "")
+            if header_value:
+                candidates.append(self._normalize_token(header_value))
+        return [candidate for candidate in candidates if candidate]
+
+    def _is_authorized(self, headers: Headers) -> bool:
+        return any(candidate == MCP_BEARER_TOKEN for candidate in self._candidate_tokens(headers))
 
     def _get_instance_app(self, instance: dict[str, Any]):
         cache_key = int(instance["id"])

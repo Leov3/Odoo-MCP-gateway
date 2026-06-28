@@ -103,6 +103,8 @@ Para n8n:
 - `Server Transport`: `HTTP Streamable`
 - `MCP Endpoint URL`: `https://tu-dominio/compraloahora/mcp/`
 - `Authentication`: `Bearer Auth` o `Header Auth`
+- Con `Bearer Auth`, pega solo el token.
+- Con `Header Auth`, define exactamente `Authorization: Bearer <MCP_BEARER_TOKEN>`
 
 ### Validado con n8n
 

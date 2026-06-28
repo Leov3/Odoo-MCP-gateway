@@ -77,10 +77,11 @@ Para n8n usa `MCP Client` con:
 - `Server Transport`: `HTTP Streamable`
 - `MCP Endpoint URL`: `https://tu-dominio/compraloahora/mcp/`
 - `Authentication`: `Bearer Auth` o `Header Auth`
-- Token o header:
+- Si usas `Bearer Auth`, pega solo el token.
+- Si usas `Header Auth`, define exactamente:
   - `Authorization: Bearer <MCP_BEARER_TOKEN>`
 
-Si el nodo falla con auth, usa `Header Auth` para forzar exactamente ese header.
+Si el nodo falla con `Bearer Auth`, cambia a `Header Auth` para forzar exactamente ese header.
 
 Las tools ya quedan ligadas a la instancia del endpoint, así que no necesitas pasar `instance` en cada llamada.
 
