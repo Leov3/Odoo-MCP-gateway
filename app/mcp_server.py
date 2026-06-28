@@ -4,6 +4,7 @@ import re
 import unicodedata
 from datetime import date
 from typing import Any
+from urllib.parse import urljoin
 
 from fastmcp import FastMCP
 from fastmcp.dependencies import CurrentRequest
@@ -140,6 +141,29 @@ def _m2o_id(value: Any) -> int | None:
     return None
 
 
+def _public_product_url(instance: dict[str, Any], record: dict[str, Any]) -> str | None:
+    website_url = record.get("website_url")
+    if not website_url:
+        return None
+    url = str(website_url).strip()
+    if not url:
+        return None
+    if url.startswith(("http://", "https://")):
+        return url
+    base_url = str(instance.get("url") or "").strip()
+    if not base_url:
+        return url
+    return urljoin(base_url.rstrip("/") + "/", url.lstrip("/"))
+
+
+def _attach_public_url(instance: dict[str, Any], record: dict[str, Any]) -> dict[str, Any]:
+    public_url = _public_product_url(instance, record)
+    if public_url:
+        record = dict(record)
+        record["public_url"] = public_url
+    return record
+
+
 def _record_text(record: dict[str, Any]) -> str:
     parts: list[str] = []
     for key in ("name", "display_name", "complete_name", "default_code", "barcode", "description_sale"):
@@ -257,6 +281,7 @@ def _product_template_fields() -> list[str]:
         "default_code",
         "barcode",
         "description_sale",
+        "website_url",
         "categ_id",
         "list_price",
         "currency_id",
@@ -281,6 +306,7 @@ def _product_variant_fields() -> list[str]:
         "barcode",
         "product_tmpl_id",
         "lst_price",
+        "website_url",
         "qty_available",
         "free_qty",
         "virtual_available",
@@ -684,6 +710,7 @@ def odoo_search_products(
             ],
             limit_value,
         )
+        results = [_attach_public_url(instance, record) for record in results]
 
         return {
             "success": True,
@@ -727,6 +754,7 @@ def odoo_search_products_by_sku(
             ],
             limit_value,
         )
+        results = [_attach_public_url(instance, record) for record in results]
         return {"success": True, "count": len(results), "results": results}
     except Exception as exc:
         return _tool_error(str(exc))
@@ -755,6 +783,7 @@ def odoo_search_products_by_category(
             extra_domain=[("categ_id", "in", category_ids)] if category_ids else None,
             limit=limit_value,
         )
+        results = [_attach_public_url(instance, record) for record in results]
         return {
             "success": True,
             "count": len(results),
@@ -785,6 +814,7 @@ def odoo_search_product_variants(
             fields=_product_variant_fields(),
             limit=limit_value,
         )
+        results = [_attach_public_url(instance, record) for record in results]
         return {"success": True, "count": len(results), "results": results}
     except Exception as exc:
         return _tool_error(str(exc))
@@ -838,6 +868,7 @@ def odoo_search_products_by_stock(
             ],
             limit_value,
         )
+        results = [_attach_public_url(instance, record) for record in results]
         return {"success": True, "count": len(results), "results": results}
     except Exception as exc:
         return _tool_error(str(exc))
@@ -909,7 +940,7 @@ def odoo_get_product(
         client = _client_from_instance(instance)
         model = _normalize_product_model(product_model)
         product = _read_single_record(client, model, int(product_id), _product_detail_fields(model))
-        return {"success": True, "record_model": model, "record": product}
+        return {"success": True, "record_model": model, "record": _attach_public_url(instance, product)}
     except Exception as exc:
         return _tool_error(str(exc))
 
@@ -948,7 +979,7 @@ def odoo_get_product_pricing(
                 int(pricelist_id),
                 ["id", "name", "currency_id", "discount_policy"],
             )
-        return {"success": True, "record_model": model, "record": product, "pricing": pricing}
+        return {"success": True, "record_model": model, "record": _attach_public_url(instance, product), "pricing": pricing}
     except Exception as exc:
         return _tool_error(str(exc))
 
@@ -964,7 +995,7 @@ def odoo_get_stock_availability(
         client = _client_from_instance(instance)
         model = _normalize_product_model(product_model)
         stock = _read_single_record(client, model, int(product_id), _stock_fields(model))
-        return {"success": True, "record_model": model, "record": stock}
+        return {"success": True, "record_model": model, "record": _attach_public_url(instance, stock)}
     except Exception as exc:
         return _tool_error(str(exc))
 
