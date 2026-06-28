@@ -4,27 +4,15 @@ from typing import Any
 
 from fastmcp import FastMCP
 
-from app.db import get_instance_by_name, list_instances
-from app.odoo_client import OdooClient, OdooClientError, OdooInstanceConfig
+from app.odoo_client import OdooClient, OdooInstanceConfig
 
 MAX_LIMIT = 50
-
-mcp = FastMCP("Odoo MCP Gateway")
 
 
 def _tool_error(message: str, **extra: Any) -> dict[str, Any]:
     payload = {"success": False, "message": message}
     payload.update(extra)
     return payload
-
-
-def _require_active_instance(name: str) -> dict[str, Any]:
-    instance = get_instance_by_name(name)
-    if not instance:
-        raise ValueError(f'Instance "{name}" was not found')
-    if not instance["active"]:
-        raise ValueError(f'Instance "{name}" is inactive')
-    return instance
 
 
 def _client_from_instance(instance: dict[str, Any]) -> OdooClient:
@@ -39,126 +27,96 @@ def _client_from_instance(instance: dict[str, Any]) -> OdooClient:
     return OdooClient(config)
 
 
-def _search_domain(query: str, fields: list[str]) -> list[Any]:
-    domain: list[Any] = []
-    for index, field in enumerate(fields):
-        condition = [field, "ilike", query]
-        if index == 0:
-            domain.append(condition)
-        else:
-            domain = ["|", domain, condition] if domain else [condition]
-    return domain
+def build_instance_mcp_app(instance: dict[str, Any]):
+    mcp = FastMCP(f"Odoo MCP Gateway - {instance['name']}")
 
+    @mcp.tool
+    def odoo_test_connection() -> dict[str, Any]:
+        try:
+            client = _client_from_instance(instance)
+            client.authenticate()
+            return {"success": True, "message": f'Connection to "{instance["name"]}" succeeded'}
+        except Exception as exc:
+            return _tool_error(str(exc))
 
-@mcp.tool
-def odoo_list_instances() -> list[dict[str, Any]]:
-    return [
-        {
-            "name": instance["name"],
-            "url": instance["url"],
-            "version": instance["version"],
-            "api_mode": instance["api_mode"],
-        }
-        for instance in list_instances(active_only=True)
-    ]
+    @mcp.tool
+    def odoo_search_partners(query: str, limit: int = 10) -> dict[str, Any]:
+        try:
+            query_value = (query or "").strip()
+            if not query_value:
+                return _tool_error("Query cannot be empty")
+            limit_value = max(1, min(int(limit), MAX_LIMIT))
+            client = _client_from_instance(instance)
+            results = client.search_read(
+                "res.partner",
+                ["|", "|", "|", ["name", "ilike", query_value], ["email", "ilike", query_value], ["phone", "ilike", query_value], ["mobile", "ilike", query_value]],
+                ["id", "name", "email", "phone", "mobile", "company_type"],
+                limit=limit_value,
+            )
+            return {"success": True, "count": len(results), "results": results}
+        except Exception as exc:
+            return _tool_error(str(exc))
 
+    @mcp.tool
+    def odoo_search_leads(query: str, limit: int = 10) -> dict[str, Any]:
+        try:
+            query_value = (query or "").strip()
+            if not query_value:
+                return _tool_error("Query cannot be empty")
+            limit_value = max(1, min(int(limit), MAX_LIMIT))
+            client = _client_from_instance(instance)
+            results = client.search_read(
+                "crm.lead",
+                ["|", "|", ["name", "ilike", query_value], ["contact_name", "ilike", query_value], ["email_from", "ilike", query_value]],
+                ["id", "name", "contact_name", "email_from", "phone", "stage_id"],
+                limit=limit_value,
+            )
+            return {"success": True, "count": len(results), "results": results}
+        except Exception as exc:
+            return _tool_error(str(exc))
 
-@mcp.tool
-def odoo_test_connection(instance: str) -> dict[str, Any]:
-    try:
-        record = _require_active_instance(instance)
-        client = _client_from_instance(record)
-        client.authenticate()
-        return {"success": True, "message": f'Connection to "{instance}" succeeded'}
-    except Exception as exc:
-        return _tool_error(str(exc))
+    @mcp.tool
+    def odoo_create_lead(
+        name: str,
+        contact_name: str | None = None,
+        email: str | None = None,
+        phone: str | None = None,
+        description: str | None = None,
+    ) -> dict[str, Any]:
+        try:
+            if not (name or "").strip():
+                return _tool_error("Lead name cannot be empty")
+            client = _client_from_instance(instance)
+            values: dict[str, Any] = {"name": name.strip()}
+            if contact_name:
+                values["contact_name"] = contact_name.strip()
+            if email:
+                values["email_from"] = email.strip()
+            if phone:
+                values["phone"] = phone.strip()
+            if description:
+                values["description"] = description.strip()
+            lead_id = client.create("crm.lead", values)
+            return {"created": True, "lead_id": lead_id}
+        except Exception as exc:
+            return {"created": False, "message": str(exc)}
 
+    @mcp.tool
+    def odoo_search_sale_orders(query: str, limit: int = 10) -> dict[str, Any]:
+        try:
+            query_value = (query or "").strip()
+            if not query_value:
+                return _tool_error("Query cannot be empty")
+            limit_value = max(1, min(int(limit), MAX_LIMIT))
+            client = _client_from_instance(instance)
+            results = client.search_read(
+                "sale.order",
+                ["|", ["name", "ilike", query_value], ["client_order_ref", "ilike", query_value]],
+                ["id", "name", "partner_id", "amount_total", "state", "date_order"],
+                limit=limit_value,
+            )
+            return {"success": True, "count": len(results), "results": results}
+        except Exception as exc:
+            return _tool_error(str(exc))
 
-@mcp.tool
-def odoo_search_partners(instance: str, query: str, limit: int = 10) -> dict[str, Any]:
-    try:
-        record = _require_active_instance(instance)
-        query = (query or "").strip()
-        if not query:
-            return _tool_error("Query cannot be empty")
-        limit = max(1, min(int(limit), MAX_LIMIT))
-        client = _client_from_instance(record)
-        results = client.search_read(
-            "res.partner",
-            ["|", "|", "|", ["name", "ilike", query], ["email", "ilike", query], ["phone", "ilike", query], ["mobile", "ilike", query]],
-            ["id", "name", "email", "phone", "mobile", "company_type"],
-            limit=limit,
-        )
-        return {"success": True, "count": len(results), "results": results}
-    except Exception as exc:
-        return _tool_error(str(exc))
-
-
-@mcp.tool
-def odoo_search_leads(instance: str, query: str, limit: int = 10) -> dict[str, Any]:
-    try:
-        record = _require_active_instance(instance)
-        query = (query or "").strip()
-        if not query:
-            return _tool_error("Query cannot be empty")
-        limit = max(1, min(int(limit), MAX_LIMIT))
-        client = _client_from_instance(record)
-        results = client.search_read(
-            "crm.lead",
-            ["|", "|", ["name", "ilike", query], ["contact_name", "ilike", query], ["email_from", "ilike", query]],
-            ["id", "name", "contact_name", "email_from", "phone", "stage_id"],
-            limit=limit,
-        )
-        return {"success": True, "count": len(results), "results": results}
-    except Exception as exc:
-        return _tool_error(str(exc))
-
-
-@mcp.tool
-def odoo_create_lead(
-    instance: str,
-    name: str,
-    contact_name: str | None = None,
-    email: str | None = None,
-    phone: str | None = None,
-    description: str | None = None,
-) -> dict[str, Any]:
-    try:
-        record = _require_active_instance(instance)
-        if not (name or "").strip():
-            return _tool_error("Lead name cannot be empty")
-        client = _client_from_instance(record)
-        values: dict[str, Any] = {"name": name.strip()}
-        if contact_name:
-            values["contact_name"] = contact_name.strip()
-        if email:
-            values["email_from"] = email.strip()
-        if phone:
-            values["phone"] = phone.strip()
-        if description:
-            values["description"] = description.strip()
-        lead_id = client.create("crm.lead", values)
-        return {"created": True, "lead_id": lead_id}
-    except Exception as exc:
-        return {"created": False, "message": str(exc)}
-
-
-@mcp.tool
-def odoo_search_sale_orders(instance: str, query: str, limit: int = 10) -> dict[str, Any]:
-    try:
-        record = _require_active_instance(instance)
-        query = (query or "").strip()
-        if not query:
-            return _tool_error("Query cannot be empty")
-        limit = max(1, min(int(limit), MAX_LIMIT))
-        client = _client_from_instance(record)
-        results = client.search_read(
-            "sale.order",
-            ["|", ["name", "ilike", query], ["client_order_ref", "ilike", query]],
-            ["id", "name", "partner_id", "amount_total", "state", "date_order"],
-            limit=limit,
-        )
-        return {"success": True, "count": len(results), "results": results}
-    except Exception as exc:
-        return _tool_error(str(exc))
-
+    return mcp.http_app(path="/")

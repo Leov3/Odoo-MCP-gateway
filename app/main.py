@@ -9,9 +9,8 @@ from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.datastructures import Headers
 from starlette.middleware.sessions import SessionMiddleware
-
-from fastmcp.utilities.lifespan import combine_lifespans
 
 from app.db import (
     ALLOWED_API_MODES,
@@ -22,14 +21,17 @@ from app.db import (
     create_instance,
     delete_instance,
     get_instance,
+    get_instance_by_slug,
     init_db,
     list_instances,
+    normalize_instance_slug,
     upsert_admin_account,
     toggle_instance,
     update_instance,
 )
-from app.mcp_server import mcp
+from app.mcp_server import build_instance_mcp_app
 from app.security import (
+    decrypt_secret,
     encrypt_secret,
     get_admin_credentials,
     get_secret_key,
@@ -41,9 +43,6 @@ load_dotenv()
 
 templates = Jinja2Templates(directory="app/templates")
 
-mcp_app = mcp.http_app(path="/")
-
-
 @asynccontextmanager
 async def app_lifespan(app: FastAPI):
     get_secret_key()
@@ -54,22 +53,98 @@ async def app_lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="Odoo MCP Gateway", lifespan=combine_lifespans(app_lifespan, mcp_app.lifespan))
+app = FastAPI(title="Odoo MCP Gateway", lifespan=app_lifespan)
 app.add_middleware(SessionMiddleware, secret_key=get_secret_key(), same_site="lax", https_only=False)
-app.mount("/mcp", mcp_app)
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
 MCP_BEARER_TOKEN = os.getenv("MCP_BEARER_TOKEN", "").strip()
 
 
-@app.middleware("http")
-async def protect_mcp_endpoint(request: Request, call_next):
-    if request.url.path.startswith("/mcp"):
-        auth_header = request.headers.get("authorization", "")
+class InstanceMCPMiddleware:
+    def __init__(self, wrapped_app: FastAPI):
+        self.wrapped_app = wrapped_app
+        self._app_cache: dict[int, tuple[str | None, Any]] = {}
+
+    def _parse_instance_path(self, path: str) -> tuple[str, str] | None:
+        segments = [segment for segment in path.split("/") if segment]
+        if len(segments) < 2 or segments[1] != "mcp":
+            return None
+        slug = segments[0]
+        suffix = "/" + "/".join(segments[2:]) if len(segments) > 2 else "/"
+        return slug, suffix
+
+    def _is_authorized(self, headers: Headers) -> bool:
+        auth_header = headers.get("authorization", "")
         scheme, _, token = auth_header.partition(" ")
-        if scheme.lower() != "bearer" or not token or token != MCP_BEARER_TOKEN:
-            return JSONResponse({"detail": "Unauthorized"}, status_code=401)
-    return await call_next(request)
+        return scheme.lower() == "bearer" and bool(token) and token == MCP_BEARER_TOKEN
+
+    def _get_instance_app(self, instance: dict[str, Any]):
+        cache_key = int(instance["id"])
+        cache_version = instance.get("updated_at") or instance.get("created_at")
+        cached = self._app_cache.get(cache_key)
+        if cached and cached[0] == cache_version:
+            return cached[1]
+        instance_app = build_instance_mcp_app(instance)
+        self._app_cache[cache_key] = (cache_version, instance_app)
+        return instance_app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.wrapped_app(scope, receive, send)
+            return
+
+        path = scope.get("path", "")
+        if path == "/mcp" or path.startswith("/mcp/"):
+            response = JSONResponse(
+                {
+                    "detail": "Deprecated endpoint. Use /<instance>/mcp/ for the configured instance.",
+                },
+                status_code=410,
+            )
+            await response(scope, receive, send)
+            return
+
+        parsed = self._parse_instance_path(path)
+        if parsed:
+            slug, suffix = parsed
+            headers = Headers(scope=scope)
+            if not self._is_authorized(headers):
+                response = JSONResponse({"detail": "Unauthorized"}, status_code=401)
+                await response(scope, receive, send)
+                return
+
+            instance = get_instance_by_slug(slug)
+            if not instance:
+                response = JSONResponse(
+                    {"detail": f'Instance "{slug}" was not found'},
+                    status_code=404,
+                )
+                await response(scope, receive, send)
+                return
+
+            if not instance["active"]:
+                response = JSONResponse(
+                    {"detail": f'Instance "{instance["name"]}" is inactive'},
+                    status_code=403,
+                )
+                await response(scope, receive, send)
+                return
+
+            instance_app = self._get_instance_app(instance)
+            sub_scope = dict(scope)
+            sub_scope["path"] = suffix
+            sub_scope["raw_path"] = suffix.encode("utf-8")
+            root_path = scope.get("root_path", "")
+            sub_scope["root_path"] = f"{root_path.rstrip('/')}/{slug}/mcp".rstrip("/")
+            sub_scope["state"] = dict(scope.get("state") or {})
+            sub_scope["state"]["odoo_instance"] = instance
+            await instance_app(sub_scope, receive, send)
+            return
+
+        await self.wrapped_app(scope, receive, send)
+
+
+app.add_middleware(InstanceMCPMiddleware)
 
 
 def flash(request: Request, message: str, category: str = "info") -> None:
@@ -116,6 +191,14 @@ def require_admin(request: Request):
     return None
 
 
+def build_public_base_url(request: Request) -> str:
+    return str(request.base_url).rstrip("/")
+
+
+def build_instance_mcp_url(request: Request, slug: str) -> str:
+    return f"{build_public_base_url(request)}/{slug}/mcp/"
+
+
 @app.get("/", include_in_schema=False)
 def root() -> RedirectResponse:
     return RedirectResponse(url="/admin", status_code=303)
@@ -159,8 +242,8 @@ def admin_dashboard(request: Request):
         {
             "total_instances": count_instances(),
             "active_instances": count_active_instances(),
-            "mcp_endpoint": "/mcp",
-            "mcp_warning": "Do not share the MCP bearer token.",
+            "mcp_endpoint": "/{slug}/mcp/",
+            "mcp_warning": "Each instance now has its own MCP endpoint. The legacy /mcp route is deprecated.",
             "admin_username": request.session.get("admin_username"),
         },
     )
@@ -272,6 +355,35 @@ def instances_list(request: Request):
         "instances.html",
         {
             "instances": list_instances(active_only=False),
+        },
+    )
+
+
+@app.get("/admin/instances/{instance_id}", response_class=HTMLResponse)
+def instance_detail_get(request: Request, instance_id: int):
+    redirect = require_admin(request)
+    if redirect:
+        return redirect
+
+    instance = get_instance(instance_id)
+    if not instance:
+        flash(request, "Instance not found", "error")
+        return RedirectResponse(url="/admin/instances", status_code=303)
+
+    slug = instance["slug"] or normalize_instance_slug(instance["name"])
+    mcp_url = build_instance_mcp_url(request, slug)
+    return render_template(
+        request,
+        "instance_detail.html",
+        {
+            "instance": instance,
+            "instance_slug": slug,
+            "secret_plaintext": decrypt_secret(instance["secret_encrypted"]),
+            "mcp_url": mcp_url,
+            "legacy_mcp_url": f"{build_public_base_url(request)}/mcp/",
+            "curl_example": f'curl -H "Authorization: Bearer <MCP_BEARER_TOKEN>" "{mcp_url}"',
+            "n8n_endpoint": mcp_url,
+            "n8n_auth_header": "Authorization: Bearer <MCP_BEARER_TOKEN>",
         },
     )
 
@@ -487,9 +599,10 @@ def instance_edit_post(
                 "errors": errors,
                 "is_edit": True,
             },
-        )
+    )
     try:
         values["active"] = active is not None
+        values["slug"] = normalize_instance_slug(values["name"])
         if not secret.strip():
             values.pop("secret_encrypted", None)
         update_instance(instance_id, values)

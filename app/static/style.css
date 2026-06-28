@@ -133,6 +133,11 @@ button.danger {
   font-size: 2rem;
 }
 
+.detail-cards .card strong {
+  font-size: 1rem;
+  line-height: 1.4;
+}
+
 .card-label,
 .muted,
 small {
@@ -261,6 +266,65 @@ input[type="checkbox"] {
   justify-content: flex-start;
 }
 
+.detail-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+}
+
+.detail-panel {
+  min-width: 0;
+}
+
+.detail-list {
+  display: grid;
+  gap: 14px;
+  margin: 0;
+}
+
+.detail-list > div {
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.detail-list dt {
+  color: #cbd5e1;
+  font-size: 0.9rem;
+  font-weight: 700;
+  margin-bottom: 6px;
+}
+
+.detail-list dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.code-block {
+  margin: 0 0 16px;
+  padding: 16px;
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  background: rgba(15, 23, 42, 0.75);
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-x: auto;
+}
+
+.note-box {
+  display: grid;
+  gap: 8px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(15, 23, 42, 0.35);
+  margin-bottom: 16px;
+}
+
+.small-break,
+.secret-value {
+  word-break: break-all;
+}
+
 .inline-form {
   margin: 0;
 }
@@ -273,6 +337,10 @@ input[type="checkbox"] {
   }
 
   .cards {
+    grid-template-columns: 1fr;
+  }
+
+  .detail-grid {
     grid-template-columns: 1fr;
   }
 }

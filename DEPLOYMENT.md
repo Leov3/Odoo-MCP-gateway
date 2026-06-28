@@ -28,6 +28,7 @@ Verifica:
 
 - `http://localhost:8000/health`
 - `http://localhost:8000/admin/login`
+- `http://localhost:8000/admin/instances`
 
 Credenciales iniciales:
 
@@ -73,15 +74,16 @@ Después del deploy confirma:
 - `GET /health` responde `{"status":"ok"}`
 - `GET /admin/login` carga el panel
 - `GET /admin/settings` permite cambiar usuario y contraseña
-- `GET /mcp` responde `401` sin token
-- `POST /mcp/` con bearer válido responde como endpoint MCP
+- `GET /mcp` responde un error deprecado
+- `GET /compraloahora/mcp/` responde `401` sin token
+- `POST /compraloahora/mcp/` con bearer válido responde como endpoint MCP
 
 ## 5. Conectar un cliente MCP
 
-Usa el endpoint:
+Usa el endpoint de la instancia:
 
 ```text
-https://tu-dominio/mcp/
+https://tu-dominio/compraloahora/mcp/
 ```
 
 Incluye este header:
@@ -93,22 +95,22 @@ Authorization: Bearer <MCP_BEARER_TOKEN>
 Nota:
 
 - usa la barra final `/mcp/`
+- la instancia va en la ruta, no en un query string
 - si el cliente no soporta `Bearer Auth`, fuerza el header manualmente como `Authorization: Bearer <MCP_BEARER_TOKEN>`
 
 Para n8n:
 
 - `Server Transport`: `HTTP Streamable`
-- `MCP Endpoint URL`: `https://tu-dominio/mcp/`
+- `MCP Endpoint URL`: `https://tu-dominio/compraloahora/mcp/`
 - `Authentication`: `Bearer Auth` o `Header Auth`
 
 ### Validado con n8n
 
 La instalación probada funcionó con:
 
-- `MCP Endpoint URL`: `https://dev-odoo-mcp-gateway.ouiteb.easypanel.host/mcp/`
+- `MCP Endpoint URL`: `https://dev-odoo-mcp-gateway.ouiteb.easypanel.host/compraloahora/mcp/`
 - `Authorization`: `Bearer <MCP_BEARER_TOKEN>`
 - Instancia usada en las tools: `Compraloahora`
-- `odoo_list_instances`: OK
 - `odoo_test_connection`: OK
 
 Si el cliente da problemas con `Bearer Auth`, usa `Header Auth` y fuerza este header:
@@ -123,3 +125,4 @@ Authorization: Bearer <MCP_BEARER_TOKEN>
 - No borres el volumen `/data` si quieres conservar las instancias.
 - El panel usa una sola cuenta admin.
 - El secreto de cada instancia se guarda cifrado.
+- El endpoint compartido `/mcp` quedó como legado y ya no es el recomendado.

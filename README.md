@@ -35,7 +35,7 @@ La aplicación queda disponible en:
 - Login: `http://localhost:8000/admin/login`
 - Ajustes de usuario: `http://localhost:8000/admin/settings`
 - Health check: `http://localhost:8000/health`
-- MCP: `http://localhost:8000/mcp`
+- MCP por instancia: `http://localhost:8000/<instancia>/mcp/`
 
 ## Entrar al panel
 
@@ -52,10 +52,10 @@ Ver [Guia de despliegue](./DEPLOYMENT.md).
 
 ## Conectar un cliente MCP
 
-Usa el endpoint:
+Cada instancia configurada expone su propio endpoint MCP. El formato es:
 
 ```text
-https://tu-dominio/mcp/
+https://tu-dominio/<instancia>/mcp/
 ```
 
 El endpoint requiere este encabezado:
@@ -67,7 +67,7 @@ Authorization: Bearer <MCP_BEARER_TOKEN>
 Ejemplo:
 
 ```bash
-curl -H "Authorization: Bearer change_me_long_random_token" https://tu-dominio/mcp/
+curl -H "Authorization: Bearer change_me_long_random_token" https://tu-dominio/compraloahora/mcp/
 ```
 
 ### n8n
@@ -75,29 +75,22 @@ curl -H "Authorization: Bearer change_me_long_random_token" https://tu-dominio/m
 Para n8n usa `MCP Client` con:
 
 - `Server Transport`: `HTTP Streamable`
-- `MCP Endpoint URL`: `https://tu-dominio/mcp/`
+- `MCP Endpoint URL`: `https://tu-dominio/compraloahora/mcp/`
 - `Authentication`: `Bearer Auth` o `Header Auth`
 - Token o header:
   - `Authorization: Bearer <MCP_BEARER_TOKEN>`
 
 Si el nodo falla con auth, usa `Header Auth` para forzar exactamente ese header.
 
-Las tools reciben una instancia por nombre, por ejemplo:
-
-```json
-{
-  "instance": "Compraloahora"
-}
-```
+Las tools ya quedan ligadas a la instancia del endpoint, así que no necesitas pasar `instance` en cada llamada.
 
 ### Validado en esta instalación
 
-- Endpoint MCP: `https://dev-odoo-mcp-gateway.ouiteb.easypanel.host/mcp/`
+- Endpoint MCP: `https://dev-odoo-mcp-gateway.ouiteb.easypanel.host/compraloahora/mcp/`
 - Instancia activa: `Compraloahora`
 - URL Odoo: `https://odoo-concept-compralo-ahora-staging-compraloahora-33072015.dev.odoo.com`
 - Version: `17`
 - API mode: `xmlrpc`
-- `odoo_list_instances`: OK
 - `odoo_test_connection`: OK
 
 ## Seguridad

@@ -39,6 +39,7 @@
           </td>
           <td>
             <div class="actions">
+              <a href="/admin/instances/{{ instance.id }}" class="button-link secondary">View details</a>
               <a href="/admin/instances/{{ instance.id }}/edit">Edit</a>
               <form method="post" action="/admin/instances/{{ instance.id }}/test">
                 <button type="submit">Test</button>
@@ -58,4 +59,3 @@
   </div>
 </section>
 {% endblock %}
-

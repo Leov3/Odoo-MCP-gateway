@@ -1,0 +1,119 @@
+{% extends "base.html" %}
+{% block title %}{{ instance.name }} - Odoo MCP Gateway{% endblock %}
+{% block header %}{{ instance.name }}{% endblock %}
+{% block content %}
+<section class="panel">
+  <div class="panel-header">
+    <div>
+      <h2>Instance details</h2>
+      <p class="muted">Canonical slug: <span class="mono">{{ instance_slug }}</span></p>
+    </div>
+    <div class="actions">
+      <a href="/admin/instances" class="button-link secondary">Back</a>
+      <a href="/admin/instances/{{ instance.id }}/edit" class="button-link secondary">Edit</a>
+    </div>
+  </div>
+
+  <div class="cards detail-cards">
+    <article class="card">
+      <span class="card-label">Status</span>
+      {% if instance.active %}
+        <strong class="badge badge-success">Active</strong>
+      {% else %}
+        <strong class="badge">Inactive</strong>
+      {% endif %}
+    </article>
+    <article class="card">
+      <span class="card-label">MCP endpoint</span>
+      <strong class="mono small-break">{{ mcp_url }}</strong>
+    </article>
+    <article class="card">
+      <span class="card-label">API mode</span>
+      <strong>{{ instance.api_mode }}</strong>
+    </article>
+  </div>
+</section>
+
+<section class="detail-grid">
+  <article class="panel detail-panel">
+    <h2>Connection data</h2>
+    <dl class="detail-list">
+      <div>
+        <dt>Odoo URL</dt>
+        <dd class="mono">{{ instance.url }}</dd>
+      </div>
+      <div>
+        <dt>Database</dt>
+        <dd class="mono">{{ instance.database_name }}</dd>
+      </div>
+      <div>
+        <dt>Username</dt>
+        <dd class="mono">{{ instance.username }}</dd>
+      </div>
+      <div>
+        <dt>Version</dt>
+        <dd>{{ instance.version }}</dd>
+      </div>
+      <div>
+        <dt>API mode</dt>
+        <dd>{{ instance.api_mode }}</dd>
+      </div>
+      <div>
+        <dt>Secret</dt>
+        <dd class="mono secret-value">{{ secret_plaintext }}</dd>
+      </div>
+      <div>
+        <dt>Created</dt>
+        <dd class="mono">{{ instance.created_at or "-" }}</dd>
+      </div>
+      <div>
+        <dt>Updated</dt>
+        <dd class="mono">{{ instance.updated_at or "-" }}</dd>
+      </div>
+    </dl>
+  </article>
+
+  <article class="panel detail-panel">
+    <h2>How to connect</h2>
+    <p class="muted">This instance exposes its own MCP server. Tools are already bound to the instance, so the client does not need to send an `instance` parameter.</p>
+
+    <h3>Endpoint</h3>
+    <pre class="code-block mono">{{ mcp_url }}</pre>
+
+    <h3>Required header</h3>
+    <pre class="code-block mono">{{ n8n_auth_header }}</pre>
+
+    <h3>curl</h3>
+    <pre class="code-block mono">{{ curl_example }}</pre>
+
+    <h3>n8n</h3>
+    <div class="note-box">
+      <div><strong>Server Transport</strong>: HTTP Streamable</div>
+      <div><strong>MCP Endpoint URL</strong>: <span class="mono">{{ n8n_endpoint }}</span></div>
+      <div><strong>Authentication</strong>: Bearer Auth or Header Auth</div>
+      <div><strong>Header</strong>: <span class="mono">{{ n8n_auth_header }}</span></div>
+    </div>
+
+    <h3>Legacy endpoint</h3>
+    <p class="muted">The old shared endpoint is deprecated and returns an error.</p>
+    <pre class="code-block mono">{{ legacy_mcp_url }}</pre>
+  </article>
+</section>
+
+<section class="panel">
+  <div class="panel-header">
+    <h2>Actions</h2>
+    <div class="actions">
+      <form method="post" action="/admin/instances/{{ instance.id }}/test">
+        <button type="submit">Test connection</button>
+      </form>
+      <form method="post" action="/admin/instances/{{ instance.id }}/toggle">
+        <button type="submit">{% if instance.active %}Deactivate{% else %}Activate{% endif %}</button>
+      </form>
+      <form method="post" action="/admin/instances/{{ instance.id }}/delete" onsubmit="return confirm('Delete this instance?');">
+        <button type="submit" class="danger">Delete</button>
+      </form>
+    </div>
+  </div>
+</section>
+{% endblock %}
