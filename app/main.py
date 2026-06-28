@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.datastructures import Headers
 from starlette.middleware.sessions import SessionMiddleware
+from fastmcp.utilities.lifespan import combine_lifespans
 
 from app.db import (
     ALLOWED_API_MODES,
@@ -29,7 +30,7 @@ from app.db import (
     toggle_instance,
     update_instance,
 )
-from app.mcp_server import build_instance_mcp_app
+from app.mcp_server import mcp
 from app.security import (
     decrypt_secret,
     encrypt_secret,
@@ -42,6 +43,7 @@ from app.security import (
 load_dotenv()
 
 templates = Jinja2Templates(directory="app/templates")
+mcp_app = mcp.http_app(path="/")
 
 @asynccontextmanager
 async def app_lifespan(app: FastAPI):
@@ -53,7 +55,7 @@ async def app_lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="Odoo MCP Gateway", lifespan=app_lifespan)
+app = FastAPI(title="Odoo MCP Gateway", lifespan=combine_lifespans(app_lifespan, mcp_app.lifespan))
 app.add_middleware(SessionMiddleware, secret_key=get_secret_key(), same_site="lax", https_only=False)
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
@@ -63,7 +65,6 @@ MCP_BEARER_TOKEN = os.getenv("MCP_BEARER_TOKEN", "").strip()
 class InstanceMCPMiddleware:
     def __init__(self, wrapped_app: FastAPI):
         self.wrapped_app = wrapped_app
-        self._app_cache: dict[int, tuple[str | None, Any]] = {}
 
     def _parse_instance_path(self, path: str) -> tuple[str, str] | None:
         segments = [segment for segment in path.split("/") if segment]
@@ -98,16 +99,6 @@ class InstanceMCPMiddleware:
     def _is_authorized(self, headers: Headers) -> bool:
         return any(candidate == MCP_BEARER_TOKEN for candidate in self._candidate_tokens(headers))
 
-    def _get_instance_app(self, instance: dict[str, Any]):
-        cache_key = int(instance["id"])
-        cache_version = instance.get("updated_at") or instance.get("created_at")
-        cached = self._app_cache.get(cache_key)
-        if cached and cached[0] == cache_version:
-            return cached[1]
-        instance_app = build_instance_mcp_app(instance)
-        self._app_cache[cache_key] = (cache_version, instance_app)
-        return instance_app
-
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
             await self.wrapped_app(scope, receive, send)
@@ -126,7 +117,7 @@ class InstanceMCPMiddleware:
 
         parsed = self._parse_instance_path(path)
         if parsed:
-            slug, suffix = parsed
+            slug, _ = parsed
             headers = Headers(scope=scope)
             if not self._is_authorized(headers):
                 response = JSONResponse({"detail": "Unauthorized"}, status_code=401)
@@ -150,15 +141,14 @@ class InstanceMCPMiddleware:
                 await response(scope, receive, send)
                 return
 
-            instance_app = self._get_instance_app(instance)
             sub_scope = dict(scope)
-            sub_scope["path"] = suffix
-            sub_scope["raw_path"] = suffix.encode("utf-8")
+            sub_scope["path"] = "/"
+            sub_scope["raw_path"] = b"/"
             root_path = scope.get("root_path", "")
             sub_scope["root_path"] = f"{root_path.rstrip('/')}/{slug}/mcp".rstrip("/")
             sub_scope["state"] = dict(scope.get("state") or {})
             sub_scope["state"]["odoo_instance"] = instance
-            await instance_app(sub_scope, receive, send)
+            await mcp_app(sub_scope, receive, send)
             return
 
         await self.wrapped_app(scope, receive, send)
