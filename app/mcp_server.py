@@ -215,9 +215,11 @@ def _relevance_score(query_variants: list[str], record: dict[str, Any], *, stock
     if record.get("stock_match"):
         score += 20.0
 
-    free_qty = record.get("free_qty")
-    if isinstance(free_qty, (int, float)):
-        score += min(float(free_qty), 100.0) * 0.2
+    stock_value = record.get("free_qty")
+    if not isinstance(stock_value, (int, float)):
+        stock_value = record.get("qty_available")
+    if isinstance(stock_value, (int, float)):
+        score += min(float(stock_value), 100.0) * 0.2
 
     score += stock_boost
     return score
@@ -262,7 +264,6 @@ def _product_template_fields() -> list[str]:
         "purchase_ok",
         "type",
         "qty_available",
-        "free_qty",
         "virtual_available",
         "incoming_qty",
         "outgoing_qty",
@@ -428,7 +429,6 @@ def _stock_fields(model: str) -> list[str]:
         "barcode",
         "categ_id",
         "qty_available",
-        "free_qty",
         "virtual_available",
         "incoming_qty",
         "outgoing_qty",
@@ -803,7 +803,8 @@ def odoo_search_products_by_stock(
         limit_value = _validate_limit(limit)
         min_qty_value = max(0.0, float(min_qty))
         cleaned_query = _strip_purchase_intent(query) if query else ""
-        extra_domain = [("free_qty", ">=", min_qty_value)]
+        template_stock_field = "qty_available"
+        variant_stock_field = "free_qty"
         results = _merge_product_candidates(
             [
                 *[
@@ -816,7 +817,7 @@ def odoo_search_products_by_stock(
                         cleaned_query,
                         model="product.template",
                         fields=_product_template_fields(),
-                        extra_domain=extra_domain,
+                        extra_domain=[(template_stock_field, ">=", min_qty_value)],
                         limit=limit_value,
                     )
                 ],
@@ -830,7 +831,7 @@ def odoo_search_products_by_stock(
                         cleaned_query,
                         model="product.product",
                         fields=_product_variant_fields(),
-                        extra_domain=extra_domain,
+                        extra_domain=[(variant_stock_field, ">=", min_qty_value)],
                         limit=limit_value,
                     )
                 ],
