@@ -44,6 +44,7 @@ load_dotenv()
 
 templates = Jinja2Templates(directory="app/templates")
 mcp_app = mcp.http_app(path="/")
+MCP_BEARER_TOKEN = os.getenv("MCP_BEARER_TOKEN", "").strip()
 
 @asynccontextmanager
 async def app_lifespan(app: FastAPI):
@@ -58,8 +59,6 @@ async def app_lifespan(app: FastAPI):
 app = FastAPI(title="Odoo MCP Gateway", lifespan=combine_lifespans(app_lifespan, mcp_app.lifespan))
 app.add_middleware(SessionMiddleware, secret_key=get_secret_key(), same_site="lax", https_only=False)
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
-
-MCP_BEARER_TOKEN = os.getenv("MCP_BEARER_TOKEN", "").strip()
 
 
 class InstanceMCPMiddleware:
@@ -117,7 +116,7 @@ class InstanceMCPMiddleware:
 
         parsed = self._parse_instance_path(path)
         if parsed:
-            slug, _ = parsed
+            slug, suffix = parsed
             headers = Headers(scope=scope)
             if not self._is_authorized(headers):
                 response = JSONResponse({"detail": "Unauthorized"}, status_code=401)
@@ -142,8 +141,8 @@ class InstanceMCPMiddleware:
                 return
 
             sub_scope = dict(scope)
-            sub_scope["path"] = "/"
-            sub_scope["raw_path"] = b"/"
+            sub_scope["path"] = suffix
+            sub_scope["raw_path"] = suffix.encode("utf-8")
             root_path = scope.get("root_path", "")
             sub_scope["root_path"] = f"{root_path.rstrip('/')}/{slug}/mcp".rstrip("/")
             sub_scope["state"] = dict(scope.get("state") or {})
