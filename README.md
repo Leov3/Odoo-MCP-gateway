@@ -116,6 +116,22 @@ Tools expuestas actualmente:
 - `odoo_search_pipeline`
 - `odoo_search_my_activities`
 
+Herramientas de negocio para Mario, pensadas para que n8n gestione el flujo comercial y el estado conversacional fuera del MCP:
+
+- `buscar_cliente_por_telefono`
+- `crear_o_actualizar_cliente_whatsapp`
+- `buscar_producto_venta`
+- `consultar_disponibilidad`
+- `crear_cotizacion_whatsapp`
+- `actualizar_cotizacion_whatsapp`
+- `confirmar_cotizacion_whatsapp`
+- `consultar_estado_pedido`
+- `crear_actividad_para_vendedor`
+
+Prompt recomendado para el agente:
+
+- [`app/mario_prompt.md`](/home/leonardo/Documentos/Proyectos/ODOO/Odoo%20MCP%20gateway/app/mario_prompt.md)
+
 ### Validado en esta instalación
 
 - Endpoint MCP: `https://dev-odoo-mcp-gateway.ouiteb.easypanel.host/compraloahora/mcp/`
@@ -132,3 +148,4 @@ Tools expuestas actualmente:
 - El secreto de cada instancia se guarda cifrado con Fernet.
 - En edición, el campo secreto se deja vacío y solo se actualiza si escribes uno nuevo.
 - Este proyecto no incluye multiusuario, OAuth, ni permisos avanzados.
+- El estado conversacional de Mario debe vivir en el agente de n8n, no en el MCP.

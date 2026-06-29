@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 import unicodedata
 from datetime import date
@@ -15,6 +16,20 @@ from app.odoo_client import OdooClient, OdooInstanceConfig
 MAX_LIMIT = 50
 
 mcp = FastMCP("Odoo MCP Gateway")
+AUDIT_LOGGER = logging.getLogger("mario.audit")
+
+CLEAR_CONFIRMATION_NORMALIZED = {
+    "confirmo",
+    "si quiero comprar",
+    "si adelante",
+    "si apruebo",
+    "apruebo la cotizacion",
+    "apruebo cotizacion",
+    "autorizo",
+    "dale",
+    "confirmar",
+    "confirmado",
+}
 
 
 def _tool_error(message: str, **extra: Any) -> dict[str, Any]:
@@ -500,6 +515,7 @@ def _sale_order_fields() -> list[str]:
         "user_id",
         "team_id",
         "note",
+        "origin",
         "client_order_ref",
         "activity_state",
     ]
@@ -554,6 +570,224 @@ def _normalize_partner_name(name: str | None) -> str:
     if not normalized:
         raise ValueError("Partner name cannot be empty")
     return normalized
+
+
+def _instance_slug(instance: dict[str, Any]) -> str:
+    return str(instance.get("slug") or instance.get("name") or "instance")
+
+
+def _audit_event(
+    event: str,
+    *,
+    instance: dict[str, Any],
+    phone: str | None = None,
+    partner_id: int | None = None,
+    order_id: int | None = None,
+    payload: dict[str, Any] | None = None,
+    level: str = "info",
+) -> None:
+    log_method = getattr(AUDIT_LOGGER, level, AUDIT_LOGGER.info)
+    log_method(
+        "%s",
+        {
+            "event": event,
+            "instance": _instance_slug(instance),
+            "phone": phone,
+            "partner_id": partner_id,
+            "order_id": order_id,
+            "payload": payload or {},
+        },
+    )
+
+
+def _normalize_phone(phone: str | None) -> str:
+    return re.sub(r"\D+", "", str(phone or ""))
+
+
+def _normalize_whatsapp_confirmation(text: str | None) -> str:
+    value = (text or "").strip().lower()
+    value = unicodedata.normalize("NFKD", value)
+    value = "".join(character for character in value if not unicodedata.combining(character))
+    value = re.sub(r"[^a-z0-9]+", " ", value)
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def _is_clear_confirmation(text: str | None) -> bool:
+    normalized = _normalize_whatsapp_confirmation(text)
+    if not normalized:
+        return False
+    if normalized in CLEAR_CONFIRMATION_NORMALIZED:
+        return True
+    prefixes = (
+        "confirmo",
+        "si quiero comprar",
+        "si adelante",
+        "apruebo",
+        "autorizo",
+        "dale",
+    )
+    return any(normalized.startswith(prefix) for prefix in prefixes)
+
+
+def _phone_variants(phone: str) -> list[str]:
+    raw = (phone or "").strip()
+    digits = _normalize_phone(raw)
+    variants: list[str] = []
+    for candidate in (raw, digits, digits[-10:] if len(digits) > 10 else digits):
+        if candidate and candidate not in variants:
+            variants.append(candidate)
+    return variants
+
+
+def _partner_fields_for_whatsapp() -> list[str]:
+    return [
+        "id",
+        "name",
+        "display_name",
+        "email",
+        "phone",
+        "mobile",
+        "company_type",
+        "customer_rank",
+        "supplier_rank",
+        "active",
+    ]
+
+
+def _read_partner(client: OdooClient, partner_id: int) -> dict[str, Any]:
+    partner = _read_single_record(client, "res.partner", int(partner_id), _partner_fields())
+    return partner
+
+
+def _score_partner_match(phone: str, record: dict[str, Any]) -> float:
+    query_digits = _normalize_phone(phone)
+    score = 0.0
+    for field in ("phone", "mobile"):
+        value_digits = _normalize_phone(record.get(field))
+        if not value_digits:
+            continue
+        if query_digits and value_digits == query_digits:
+            score += 200.0
+        elif query_digits and query_digits in value_digits:
+            score += 120.0
+        elif value_digits and value_digits in query_digits:
+            score += 90.0
+        elif record.get(field) and phone and str(record[field]).strip() == phone.strip():
+            score += 180.0
+    if record.get("customer_rank"):
+        score += 5.0
+    return score
+
+
+def _search_partners_by_phone(client: OdooClient, phone: str, limit: int = 5) -> list[dict[str, Any]]:
+    query_value = (phone or "").strip()
+    if not query_value:
+        return []
+
+    variants = _phone_variants(query_value)
+    records: list[dict[str, Any]] = []
+    seen_ids: set[int] = set()
+    for variant in variants:
+        results = client.search_read(
+            "res.partner",
+            ["|", ["phone", "ilike", variant], ["mobile", "ilike", variant]],
+            _partner_fields_for_whatsapp(),
+            limit=max(1, min(limit, MAX_LIMIT)),
+        )
+        for result in results:
+            partner_id = int(result.get("id") or 0)
+            if partner_id in seen_ids:
+                continue
+            seen_ids.add(partner_id)
+            item = dict(result)
+            item["match_score"] = _score_partner_match(query_value, item)
+            records.append(item)
+
+    records.sort(
+        key=lambda record: (
+            -float(record.get("match_score", 0.0)),
+            str(record.get("display_name") or record.get("name") or ""),
+            int(record.get("id") or 0),
+        )
+    )
+    return records[: max(1, min(limit, MAX_LIMIT))]
+
+
+def _search_partner_by_phone_best(client: OdooClient, phone: str) -> dict[str, Any] | None:
+    results = _search_partners_by_phone(client, phone, limit=5)
+    return results[0] if results else None
+
+
+def _append_order_origin(
+    values: dict[str, Any],
+    *,
+    whatsapp_phone: str,
+    notes: str | None = None,
+) -> None:
+    origin_text = f"WhatsApp {whatsapp_phone}".strip()
+    current_note = values.get("note") or ""
+    note_parts = [part for part in (current_note.strip(), f"Origen: {origin_text}", notes.strip() if notes else "") if part]
+    values["note"] = "\n".join(note_parts).strip()
+    values["client_order_ref"] = values.get("client_order_ref") or origin_text
+    values["origin"] = values.get("origin") or origin_text
+
+
+def _normalize_quote_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    for raw_item in items:
+        if raw_item.get("price_unit") is not None:
+            raise ValueError("Price overrides are not allowed in the WhatsApp flow")
+        if raw_item.get("discount") is not None:
+            raise ValueError("Discounts are not allowed in the WhatsApp flow")
+        product_id = raw_item.get("product_id")
+        quantity = raw_item.get("quantity", raw_item.get("product_uom_qty", 1))
+        if product_id is None:
+            raise ValueError("Each item must include product_id")
+        quantity_value = float(quantity)
+        if quantity_value <= 0:
+            raise ValueError("Quantity must be greater than zero")
+        product_model = _normalize_product_model(str(raw_item.get("product_model") or "product.product"))
+        item: dict[str, Any] = {
+            "product_id": int(product_id),
+            "product_model": product_model,
+            "quantity": quantity_value,
+        }
+        if raw_item.get("name"):
+            item["name"] = str(raw_item["name"]).strip()
+        if raw_item.get("price_unit") is not None:
+            item["price_unit"] = float(raw_item["price_unit"])
+        if raw_item.get("discount") is not None:
+            item["discount"] = float(raw_item["discount"])
+        if raw_item.get("uom_id") is not None:
+            item["uom_id"] = int(raw_item["uom_id"])
+        normalized.append(item)
+    return normalized
+
+
+def _read_order_with_lines(client: OdooClient, order_id: int) -> dict[str, Any]:
+    order = _read_single_record(client, "sale.order", int(order_id), _sale_order_fields())
+    lines = client.search_read(
+        "sale.order.line",
+        [("order_id", "=", int(order_id))],
+        _sale_order_line_fields(),
+        limit=MAX_LIMIT,
+    )
+    return {"order": order, "lines": lines, "line_count": len(lines)}
+
+
+def _find_activity_type_id(client: OdooClient) -> int | None:
+    candidates = client.search_read(
+        "mail.activity.type",
+        ["|", ["name", "ilike", "todo"], ["name", "ilike", "call"]],
+        ["id", "name"],
+        limit=5,
+    )
+    if candidates:
+        return int(candidates[0]["id"])
+    fallback = client.search_read("mail.activity.type", [], ["id", "name"], limit=1)
+    if fallback:
+        return int(fallback[0]["id"])
+    return None
 
 
 @mcp.tool
@@ -707,7 +941,7 @@ def odoo_search_sale_orders(
         results = client.search_read(
             "sale.order",
             ["|", ["name", "ilike", query_value], ["client_order_ref", "ilike", query_value]],
-            ["id", "name", "partner_id", "client_order_ref", "amount_total", "state", "date_order", "activity_state", "currency_id"],
+            ["id", "name", "partner_id", "client_order_ref", "origin", "amount_total", "state", "date_order", "activity_state", "currency_id"],
             limit=limit_value,
         )
         return {"success": True, "count": len(results), "results": results}
@@ -1078,6 +1312,7 @@ def odoo_get_sale_order(
 def odoo_create_quotation(
     partner_id: int,
     client_order_ref: str | None = None,
+    origin: str | None = None,
     validity_date: str | None = None,
     note: str | None = None,
     pricelist_id: int | None = None,
@@ -1094,6 +1329,8 @@ def odoo_create_quotation(
         values: dict[str, Any] = {"partner_id": int(partner_id)}
         if client_order_ref:
             values["client_order_ref"] = client_order_ref.strip()
+        if origin:
+            values["origin"] = origin.strip()
         if validity_date:
             values["validity_date"] = validity_date.strip()
         if note:
@@ -1387,4 +1624,610 @@ def odoo_search_my_activities(
         )
         return {"success": True, "count": len(results), "results": results}
     except Exception as exc:
+        return _tool_error(str(exc))
+
+
+def _partner_payload_from_record(record: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(record)
+    payload.pop("match_score", None)
+    return payload
+
+
+def _result_product_payload(instance: dict[str, Any], record: dict[str, Any]) -> dict[str, Any]:
+    payload = _attach_public_url(instance, record)
+    return payload
+
+
+def _product_stock_value(record: dict[str, Any]) -> float | None:
+    for key in ("free_qty", "qty_available", "virtual_available"):
+        value = record.get(key)
+        if isinstance(value, (int, float)):
+            return float(value)
+    return None
+
+
+@mcp.tool
+def buscar_cliente_por_telefono(
+    phone: str,
+    limit: int = 5,
+    request: Request = CurrentRequest(),
+) -> dict[str, Any]:
+    try:
+        instance = _instance_from_request(request)
+        query_value = (phone or "").strip()
+        if not query_value:
+            return _tool_error("Phone cannot be empty")
+        limit_value = _validate_limit(limit)
+        client = _client_from_instance(instance)
+        results = _search_partners_by_phone(client, query_value, limit=limit_value)
+        best_match = _partner_payload_from_record(results[0]) if results else None
+        _audit_event(
+            "whatsapp_partner_lookup",
+            instance=instance,
+            phone=query_value,
+            partner_id=int(best_match["id"]) if best_match else None,
+            payload={"count": len(results)},
+        )
+        return {
+            "success": True,
+            "count": len(results),
+            "best_match": best_match,
+            "results": [_partner_payload_from_record(record) for record in results],
+        }
+    except Exception as exc:
+        _audit_event("whatsapp_partner_lookup_error", instance=_instance_from_request(request), phone=phone, payload={"error": str(exc)}, level="error")
+        return _tool_error(str(exc))
+
+
+@mcp.tool
+def crear_o_actualizar_cliente_whatsapp(
+    phone: str,
+    name: str | None = None,
+    email: str | None = None,
+    mobile: str | None = None,
+    request: Request = CurrentRequest(),
+) -> dict[str, Any]:
+    try:
+        instance = _instance_from_request(request)
+        query_value = (phone or "").strip()
+        if not query_value:
+            return _tool_error("Phone cannot be empty")
+        client = _client_from_instance(instance)
+        existing = _search_partner_by_phone_best(client, query_value)
+        if existing:
+            partner_id = int(existing["id"])
+            updates: dict[str, Any] = {}
+            if email and not existing.get("email"):
+                updates["email"] = email.strip()
+            if mobile and not existing.get("mobile"):
+                updates["mobile"] = mobile.strip()
+            elif not existing.get("mobile"):
+                updates["mobile"] = query_value
+            if not existing.get("phone"):
+                updates["phone"] = query_value
+            updated = False
+            if updates:
+                updated = client.write("res.partner", [partner_id], updates)
+            partner = _read_partner(client, partner_id)
+            _audit_event(
+                "whatsapp_partner_reused",
+                instance=instance,
+                phone=query_value,
+                partner_id=partner_id,
+                payload={"updated": updated, "updates": list(updates.keys())},
+            )
+            return {
+                "success": True,
+                "created": False,
+                "updated": updated,
+                "partner_id": partner_id,
+                "record": partner,
+            }
+
+        partner_name = _normalize_partner_name(name)
+        values: dict[str, Any] = {
+            "name": partner_name,
+            "customer_rank": 1,
+            "phone": query_value,
+        }
+        values["mobile"] = mobile.strip() if mobile and mobile.strip() else query_value
+        if email and email.strip():
+            values["email"] = email.strip()
+        partner_id = client.create("res.partner", values)
+        partner = _read_partner(client, partner_id)
+        _audit_event(
+            "whatsapp_partner_created",
+            instance=instance,
+            phone=query_value,
+            partner_id=partner_id,
+            payload={"name": partner_name},
+        )
+        return {
+            "success": True,
+            "created": True,
+            "updated": False,
+            "partner_id": partner_id,
+            "record": partner,
+        }
+    except Exception as exc:
+        _audit_event(
+            "whatsapp_partner_upsert_error",
+            instance=_instance_from_request(request),
+            phone=phone,
+            payload={"error": str(exc)},
+            level="error",
+        )
+        return _tool_error(str(exc))
+
+
+@mcp.tool
+def buscar_producto_venta(
+    query: str,
+    limit: int = 3,
+    request: Request = CurrentRequest(),
+) -> dict[str, Any]:
+    try:
+        instance = _instance_from_request(request)
+        cleaned_query = _strip_purchase_intent(query)
+        if not cleaned_query:
+            return _tool_error("Query cannot be empty")
+        limit_value = max(1, min(_validate_limit(limit), 3))
+        client = _client_from_instance(instance)
+        category_matches = _search_category_matches(client, cleaned_query)
+        category_ids = [record["id"] for record in category_matches]
+        template_results = _search_product_records(
+            client,
+            cleaned_query,
+            model="product.template",
+            fields=_product_template_fields(),
+            extra_domain=[("categ_id", "in", category_ids)] if category_ids else None,
+            limit=limit_value,
+        )
+        variant_results = _search_product_records(
+            client,
+            cleaned_query,
+            model="product.product",
+            fields=_product_variant_fields(),
+            limit=limit_value,
+        )
+        results = _merge_product_candidates(
+            [
+                *template_results,
+                *variant_results,
+            ],
+            limit_value,
+        )
+        results = [_result_product_payload(instance, record) for record in results]
+        _audit_event(
+            "whatsapp_product_lookup",
+            instance=instance,
+            payload={"query": cleaned_query, "count": len(results)},
+        )
+        return {
+            "success": True,
+            "count": len(results),
+            "matched_categories": category_matches,
+            "results": results,
+        }
+    except Exception as exc:
+        _audit_event(
+            "whatsapp_product_lookup_error",
+            instance=_instance_from_request(request),
+            payload={"error": str(exc), "query": query},
+            level="error",
+        )
+        return _tool_error(str(exc))
+
+
+@mcp.tool
+def consultar_disponibilidad(
+    product_id: int,
+    product_model: str = "product.template",
+    quantity: float = 1.0,
+    request: Request = CurrentRequest(),
+) -> dict[str, Any]:
+    try:
+        instance = _instance_from_request(request)
+        client = _client_from_instance(instance)
+        model = _normalize_product_model(product_model)
+        record = _read_single_record(client, model, int(product_id), _stock_fields(model))
+        available_qty = _product_stock_value(record)
+        requested_qty = float(quantity)
+        can_fulfill = available_qty is not None and available_qty >= requested_qty
+        payload = {
+            "success": True,
+            "record_model": model,
+            "record": _attach_public_url(instance, record),
+            "requested_qty": requested_qty,
+            "available_qty": available_qty,
+            "can_fulfill": can_fulfill if available_qty is not None else None,
+            "stock_source": "product_fields",
+        }
+        _audit_event(
+            "whatsapp_stock_lookup",
+            instance=instance,
+            payload={
+                "product_id": int(product_id),
+                "product_model": model,
+                "requested_qty": requested_qty,
+                "available_qty": available_qty,
+                "can_fulfill": payload["can_fulfill"],
+            },
+        )
+        return payload
+    except Exception as exc:
+        _audit_event(
+            "whatsapp_stock_lookup_error",
+            instance=_instance_from_request(request),
+            payload={"error": str(exc), "product_id": product_id},
+            level="error",
+        )
+        return _tool_error(str(exc))
+
+
+@mcp.tool
+def crear_cotizacion_whatsapp(
+    partner_id: int,
+    items: list[dict[str, Any]],
+    whatsapp_phone: str,
+    notes: str | None = None,
+    client_order_ref: str | None = None,
+    origin: str | None = None,
+    pricelist_id: int | None = None,
+    user_id: int | None = None,
+    team_id: int | None = None,
+    payment_term_id: int | None = None,
+    partner_invoice_id: int | None = None,
+    partner_shipping_id: int | None = None,
+    request: Request = CurrentRequest(),
+) -> dict[str, Any]:
+    try:
+        instance = _instance_from_request(request)
+        client = _client_from_instance(instance)
+        normalized_items = _normalize_quote_items(items)
+        if not normalized_items:
+            return _tool_error("At least one item is required")
+
+        values: dict[str, Any] = {"partner_id": int(partner_id)}
+        if client_order_ref:
+            values["client_order_ref"] = client_order_ref.strip()
+        if origin:
+            values["origin"] = origin.strip()
+        _append_order_origin(values, whatsapp_phone=whatsapp_phone, notes=notes)
+        if pricelist_id is not None:
+            values["pricelist_id"] = int(pricelist_id)
+        if user_id is not None:
+            values["user_id"] = int(user_id)
+        if team_id is not None:
+            values["team_id"] = int(team_id)
+        if payment_term_id is not None:
+            values["payment_term_id"] = int(payment_term_id)
+        if partner_invoice_id is not None:
+            values["partner_invoice_id"] = int(partner_invoice_id)
+        if partner_shipping_id is not None:
+            values["partner_shipping_id"] = int(partner_shipping_id)
+
+        order_id = client.create("sale.order", values)
+        created_lines: list[dict[str, Any]] = []
+        for item in normalized_items:
+            resolved_product_id = _resolve_variant_id(client, item["product_model"], int(item["product_id"]))
+            line_values: dict[str, Any] = {
+                "order_id": int(order_id),
+                "product_id": resolved_product_id,
+                "product_uom_qty": float(item["quantity"]),
+            }
+            if item.get("name"):
+                line_values["name"] = item["name"]
+            if item.get("uom_id") is not None:
+                line_values["product_uom"] = int(item["uom_id"])
+            line_id = client.create("sale.order.line", line_values)
+            created_lines.append(_read_single_record(client, "sale.order.line", line_id, _sale_order_line_fields()))
+
+        order_payload = _read_order_with_lines(client, order_id)
+        order = order_payload["order"]
+        partner = _read_partner(client, int(partner_id))
+        message_body = "\n".join(
+            [
+                "Cotización creada desde WhatsApp.",
+                f"WhatsApp: {whatsapp_phone}",
+                f"Items: {len(normalized_items)}",
+            ]
+        )
+        client.call_method(
+            "sale.order",
+            "message_post",
+            ids=[int(order_id)],
+            kwargs={"body": message_body, "subtype_xmlid": "mail.mt_note"},
+        )
+        _audit_event(
+            "whatsapp_quote_created",
+            instance=instance,
+            phone=whatsapp_phone,
+            partner_id=int(partner_id),
+            order_id=int(order_id),
+            payload={"items": normalized_items, "line_count": len(created_lines)},
+        )
+        return {
+            "success": True,
+            "created": True,
+            "order_id": int(order_id),
+            "order": order,
+            "lines": order_payload["lines"],
+            "line_count": order_payload["line_count"],
+            "partner": partner,
+        }
+    except Exception as exc:
+        _audit_event(
+            "whatsapp_quote_create_error",
+            instance=_instance_from_request(request),
+            phone=whatsapp_phone,
+            partner_id=partner_id,
+            payload={"error": str(exc)},
+            level="error",
+        )
+        return _tool_error(str(exc))
+
+
+@mcp.tool
+def actualizar_cotizacion_whatsapp(
+    order_id: int,
+    items: list[dict[str, Any]],
+    whatsapp_phone: str | None = None,
+    notes: str | None = None,
+    request: Request = CurrentRequest(),
+) -> dict[str, Any]:
+    try:
+        instance = _instance_from_request(request)
+        client = _client_from_instance(instance)
+        normalized_items = _normalize_quote_items(items)
+        if not normalized_items:
+            return _tool_error("At least one item is required")
+
+        order_payload = _read_order_with_lines(client, int(order_id))
+        if order_payload["order"].get("state") not in {"draft", "sent"}:
+            return _tool_error("Only draft or sent quotations can be updated")
+
+        existing_lines = order_payload["lines"]
+        updated_line_ids: list[int] = []
+        created_line_ids: list[int] = []
+        for item in normalized_items:
+            resolved_product_id = _resolve_variant_id(client, item["product_model"], int(item["product_id"]))
+            line_match = None
+            for line in existing_lines:
+                if _m2o_id(line.get("product_id")) == resolved_product_id:
+                    line_match = line
+                    break
+
+            if line_match is not None:
+                values: dict[str, Any] = {"product_uom_qty": float(item["quantity"])}
+                if item.get("name"):
+                    values["name"] = item["name"]
+                if item.get("uom_id") is not None:
+                    values["product_uom"] = int(item["uom_id"])
+                client.write("sale.order.line", [int(line_match["id"])], values)
+                updated_line_ids.append(int(line_match["id"]))
+            else:
+                line_values = {
+                    "order_id": int(order_id),
+                    "product_id": resolved_product_id,
+                    "product_uom_qty": float(item["quantity"]),
+                }
+                if item.get("name"):
+                    line_values["name"] = item["name"]
+                if item.get("uom_id") is not None:
+                    line_values["product_uom"] = int(item["uom_id"])
+                line_id = client.create("sale.order.line", line_values)
+                created_line_ids.append(int(line_id))
+
+        if notes:
+            current_note = order_payload["order"].get("note") or ""
+            merged_note = "\n".join([part for part in (current_note.strip(), notes.strip()) if part])
+            client.write("sale.order", [int(order_id)], {"note": merged_note})
+
+        refreshed = _read_order_with_lines(client, int(order_id))
+        _audit_event(
+            "whatsapp_quote_updated",
+            instance=instance,
+            phone=whatsapp_phone,
+            order_id=int(order_id),
+            payload={
+                "updated_line_ids": updated_line_ids,
+                "created_line_ids": created_line_ids,
+                "items": normalized_items,
+            },
+        )
+        return {
+            "success": True,
+            "updated": True,
+            "order_id": int(order_id),
+            "order": refreshed["order"],
+            "lines": refreshed["lines"],
+            "line_count": refreshed["line_count"],
+            "updated_line_ids": updated_line_ids,
+            "created_line_ids": created_line_ids,
+        }
+    except Exception as exc:
+        _audit_event(
+            "whatsapp_quote_update_error",
+            instance=_instance_from_request(request),
+            phone=whatsapp_phone,
+            order_id=order_id,
+            payload={"error": str(exc)},
+            level="error",
+        )
+        return _tool_error(str(exc))
+
+
+@mcp.tool
+def confirmar_cotizacion_whatsapp(
+    order_id: int,
+    confirmation_text: str,
+    whatsapp_phone: str | None = None,
+    request: Request = CurrentRequest(),
+) -> dict[str, Any]:
+    try:
+        instance = _instance_from_request(request)
+        if not _is_clear_confirmation(confirmation_text):
+            return _tool_error("Confirmation text is not explicit enough")
+        client = _client_from_instance(instance)
+        order_payload = _read_order_with_lines(client, int(order_id))
+        order = order_payload["order"]
+        if order.get("state") not in {"draft", "sent"}:
+            return _tool_error("Only pending quotations can be confirmed")
+        result = client.call_method("sale.order", "action_confirm", ids=[int(order_id)])
+        refreshed = _read_order_with_lines(client, int(order_id))
+        client.call_method(
+            "sale.order",
+            "message_post",
+            ids=[int(order_id)],
+            kwargs={
+                "body": f"Orden confirmada por WhatsApp. Texto de confirmación: {confirmation_text.strip()}",
+                "subtype_xmlid": "mail.mt_note",
+            },
+        )
+        _audit_event(
+            "whatsapp_quote_confirmed",
+            instance=instance,
+            phone=whatsapp_phone,
+            order_id=int(order_id),
+            payload={"confirmation_text": confirmation_text.strip(), "result": result},
+        )
+        return {
+            "success": True,
+            "confirmed": True,
+            "result": result,
+            "order": refreshed["order"],
+            "lines": refreshed["lines"],
+            "line_count": refreshed["line_count"],
+        }
+    except Exception as exc:
+        _audit_event(
+            "whatsapp_quote_confirm_error",
+            instance=_instance_from_request(request),
+            phone=whatsapp_phone,
+            order_id=order_id,
+            payload={"error": str(exc)},
+            level="error",
+        )
+        return _tool_error(str(exc))
+
+
+@mcp.tool
+def consultar_estado_pedido(
+    phone: str,
+    order_name: str | None = None,
+    limit: int = 5,
+    request: Request = CurrentRequest(),
+) -> dict[str, Any]:
+    try:
+        instance = _instance_from_request(request)
+        query_value = (phone or "").strip()
+        if not query_value and not (order_name or "").strip():
+            return _tool_error("Phone or order name is required")
+        limit_value = _validate_limit(limit)
+        client = _client_from_instance(instance)
+        conditions: list[tuple[str, str, Any]] = []
+        if query_value:
+            conditions.extend(
+                [
+                    ("partner_id.phone", "ilike", query_value),
+                    ("partner_id.mobile", "ilike", query_value),
+                ]
+            )
+        if order_name and order_name.strip():
+            order_query = order_name.strip()
+            conditions.extend(
+                [
+                    ("name", "ilike", order_query),
+                    ("client_order_ref", "ilike", order_query),
+                ]
+            )
+        domain = _or_domain(conditions)
+        results = client.search_read(
+            "sale.order",
+            domain,
+            ["id", "name", "partner_id", "client_order_ref", "origin", "amount_total", "state", "date_order", "currency_id", "activity_state"],
+            limit=limit_value,
+        )
+        _audit_event(
+            "whatsapp_order_lookup",
+            instance=instance,
+            phone=query_value,
+            payload={"count": len(results), "order_name": order_name},
+        )
+        return {"success": True, "count": len(results), "results": results}
+    except Exception as exc:
+        _audit_event(
+            "whatsapp_order_lookup_error",
+            instance=_instance_from_request(request),
+            phone=phone,
+            payload={"error": str(exc)},
+            level="error",
+        )
+        return _tool_error(str(exc))
+
+
+@mcp.tool
+def crear_actividad_para_vendedor(
+    partner_id: int,
+    summary: str,
+    reason: str,
+    whatsapp_phone: str | None = None,
+    deadline: str | None = None,
+    user_id: int | None = None,
+    request: Request = CurrentRequest(),
+) -> dict[str, Any]:
+    try:
+        instance = _instance_from_request(request)
+        client = _client_from_instance(instance)
+        activity_type_id = _find_activity_type_id(client)
+        if activity_type_id is None:
+            return _tool_error("No activity type is available in Odoo")
+
+        note = "\n".join(
+            part
+            for part in (
+                f"Motivo: {reason.strip()}",
+                f"WhatsApp: {whatsapp_phone}" if whatsapp_phone else "",
+            )
+            if part
+        )
+        result = client.call_method(
+            "res.partner",
+            "activity_schedule",
+            ids=[int(partner_id)],
+            kwargs={
+                "activity_type_id": activity_type_id,
+                "summary": summary.strip(),
+                **({"date_deadline": deadline.strip()} if deadline and deadline.strip() else {}),
+                **({"note": note} if note else {}),
+                **({"user_id": int(user_id)} if user_id is not None else {}),
+            },
+        )
+        client.call_method(
+            "res.partner",
+            "message_post",
+            ids=[int(partner_id)],
+            kwargs={
+                "body": f"Escalamiento comercial registrado. Motivo: {reason.strip()}",
+                "subtype_xmlid": "mail.mt_note",
+            },
+        )
+        _audit_event(
+            "whatsapp_escalation_created",
+            instance=instance,
+            phone=whatsapp_phone,
+            partner_id=int(partner_id),
+            payload={"summary": summary.strip(), "reason": reason.strip(), "activity_type_id": activity_type_id},
+        )
+        return {"success": True, "result": result, "activity_type_id": activity_type_id}
+    except Exception as exc:
+        _audit_event(
+            "whatsapp_escalation_error",
+            instance=_instance_from_request(request),
+            phone=whatsapp_phone,
+            partner_id=partner_id,
+            payload={"error": str(exc)},
+            level="error",
+        )
         return _tool_error(str(exc))

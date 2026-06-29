@@ -130,3 +130,4 @@ Authorization: Bearer <MCP_BEARER_TOKEN>
 - El panel usa una sola cuenta admin.
 - El secreto de cada instancia se guarda cifrado.
 - El endpoint compartido `/mcp` quedó como legado y ya no es el recomendado.
+- El flujo de Mario debe llevar su memoria, carrito y cotización pendiente en n8n; el MCP solo expone herramientas de negocio.
