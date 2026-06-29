@@ -334,8 +334,8 @@ class MarioBusinessToolTests(unittest.TestCase):
         ]
         fake_variant_results: list[dict[str, object]] = []
         with patch("app.mcp_server._client_from_instance", return_value=FakeOdooClient()), patch(
-            "app.mcp_server._search_category_matches",
-            return_value=[],
+            "app.mcp_server._search_all_category_matches",
+            return_value={"public_categories": [], "internal_categories": []},
         ), patch(
             "app.mcp_server._search_product_records",
             side_effect=[fake_template_results, fake_variant_results],
@@ -344,6 +344,30 @@ class MarioBusinessToolTests(unittest.TestCase):
 
         self.assertTrue(result["success"])
         self.assertEqual(result["count"], 3)
+
+    def test_buscar_producto_venta_prioriza_public_categories(self) -> None:
+        request = _fake_request()
+        fake_template_results = [
+            {"id": 1, "name": "Producto 1", "display_name": "Producto 1", "list_price": 10.0, "record_model": "product.template", "relevance": 100.0}
+        ]
+        fake_variant_results: list[dict[str, object]] = []
+        with patch("app.mcp_server._client_from_instance", return_value=FakeOdooClient()), patch(
+            "app.mcp_server._search_all_category_matches",
+            return_value={
+                "public_categories": [{"id": 99, "name": "Herramientas", "record_model": "product.public.category"}],
+                "internal_categories": [{"id": 55, "name": "Interna", "record_model": "product.category"}],
+            },
+        ), patch(
+            "app.mcp_server._search_product_records",
+            side_effect=[fake_template_results, fake_variant_results],
+        ) as mocked_search:
+            result = buscar_producto_venta("herramientas", request=request)
+
+        self.assertTrue(result["success"])
+        self.assertIn("matched_public_categories", result)
+        self.assertIn("matched_internal_categories", result)
+        self.assertEqual(result["matched_public_categories"][0]["id"], 99)
+        self.assertEqual(mocked_search.call_args_list[0].kwargs["extra_domain"], [("categ_id", "in", [99])])
 
     def test_consultar_disponibilidad_uses_stock_fields(self) -> None:
         request = _fake_request()

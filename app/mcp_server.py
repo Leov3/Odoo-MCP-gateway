@@ -334,6 +334,10 @@ def _category_fields() -> list[str]:
     return ["id", "name", "complete_name", "parent_id", "product_count"]
 
 
+def _public_category_fields() -> list[str]:
+    return ["id", "name", "parent_id", "sequence", "website_id"]
+
+
 def _product_domain_for_query(query: str, *, model: str) -> list[Any]:
     conditions = [
         ("name", "ilike", query),
@@ -414,6 +418,46 @@ def _search_category_matches(client: OdooClient, query: str) -> list[dict[str, A
         ],
         MAX_LIMIT,
     )
+
+
+def _search_public_category_matches(client: OdooClient, query: str) -> list[dict[str, Any]]:
+    query_variants = _expand_product_queries(query)
+    if not query_variants:
+        return []
+
+    records: list[dict[str, Any]] = []
+    for variant in query_variants:
+        domain = _or_domain(
+            [
+                ("name", "ilike", variant),
+                ("complete_name", "ilike", variant),
+            ]
+        )
+        matches = client.search_read(
+            "product.public.category",
+            domain,
+            _public_category_fields(),
+            limit=MAX_LIMIT,
+        )
+        records.extend(matches)
+    return _merge_product_candidates(
+        [
+            {
+                **record,
+                "record_model": "product.public.category",
+                "relevance": _relevance_score(query_variants, record),
+            }
+            for record in records
+        ],
+        MAX_LIMIT,
+    )
+
+
+def _search_all_category_matches(client: OdooClient, query: str) -> dict[str, list[dict[str, Any]]]:
+    return {
+        "public_categories": _search_public_category_matches(client, query),
+        "internal_categories": _search_category_matches(client, query),
+    }
 
 
 def _read_single_record(client: OdooClient, model: str, record_id: int, fields: list[str]) -> dict[str, Any]:
@@ -1061,8 +1105,10 @@ def odoo_search_products_by_category(
             return _tool_error("Query cannot be empty")
         client = _client_from_instance(instance)
         limit_value = _validate_limit(limit)
-        categories = _search_category_matches(client, cleaned_query)
-        category_ids = [record["id"] for record in categories]
+        category_matches = _search_all_category_matches(client, cleaned_query)
+        public_category_ids = [record["id"] for record in category_matches["public_categories"]]
+        internal_category_ids = [record["id"] for record in category_matches["internal_categories"]]
+        category_ids = public_category_ids or internal_category_ids
         results = _search_product_records(
             client,
             cleaned_query,
@@ -1075,7 +1121,8 @@ def odoo_search_products_by_category(
         return {
             "success": True,
             "count": len(results),
-            "matched_categories": categories,
+            "matched_public_categories": category_matches["public_categories"],
+            "matched_internal_categories": category_matches["internal_categories"],
             "results": results,
         }
     except Exception as exc:
@@ -1773,8 +1820,10 @@ def buscar_producto_venta(
             return _tool_error("Query cannot be empty")
         limit_value = max(1, min(_validate_limit(limit), 3))
         client = _client_from_instance(instance)
-        category_matches = _search_category_matches(client, cleaned_query)
-        category_ids = [record["id"] for record in category_matches]
+        category_matches = _search_all_category_matches(client, cleaned_query)
+        public_category_ids = [record["id"] for record in category_matches["public_categories"]]
+        internal_category_ids = [record["id"] for record in category_matches["internal_categories"]]
+        category_ids = public_category_ids or internal_category_ids
         template_results = _search_product_records(
             client,
             cleaned_query,
@@ -1806,7 +1855,8 @@ def buscar_producto_venta(
         return {
             "success": True,
             "count": len(results),
-            "matched_categories": category_matches,
+            "matched_public_categories": category_matches["public_categories"],
+            "matched_internal_categories": category_matches["internal_categories"],
             "results": results,
         }
     except Exception as exc:
