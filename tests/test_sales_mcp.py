@@ -64,6 +64,7 @@ from app.mcp_server import (
     crear_cotizacion_whatsapp,
     crear_o_actualizar_cliente_whatsapp,
     actualizar_cotizacion_whatsapp,
+    validar_y_preparar_confirmacion_whatsapp,
 )
 from app.odoo_client import OdooClient, OdooInstanceConfig
 
@@ -447,6 +448,73 @@ class MarioBusinessToolTests(unittest.TestCase):
         self.assertFalse(rejected["success"])
         self.assertTrue(accepted["confirmed"])
         self.assertEqual(fake_client.records["sale.order"][1]["state"], "sale")
+
+    def test_validar_y_preparar_confirmacion_whatsapp_blocks_missing_tracking(self) -> None:
+        request = _fake_request()
+        fake_client = FakeOdooClient()
+        fake_client.records["sale.order"] = {
+            10: {
+                "id": 10,
+                "name": "S00010",
+                "partner_id": 20,
+                "partner_shipping_id": False,
+                "state": "draft",
+                "origin": "WhatsApp",
+            }
+        }
+        fake_client.records["res.partner"] = {
+            20: {
+                "id": 20,
+                "name": "Cliente Demo",
+                "email": "",
+                "phone": "3001234567",
+                "mobile": "3001234567",
+                "street": "",
+                "city": "",
+                "zip": "",
+            }
+        }
+        with patch("app.mcp_server._client_from_instance", return_value=fake_client):
+            result = validar_y_preparar_confirmacion_whatsapp(order_id=10, request=request)
+
+        self.assertTrue(result["success"])
+        self.assertFalse(result["can_confirm"])
+        self.assertIn("correo", result["missing_fields"])
+        self.assertIn("direccion", result["missing_fields"])
+        self.assertTrue(any(call[1] == "message_post" for call in fake_client.calls))
+
+    def test_validar_y_preparar_confirmacion_whatsapp_ready_when_tracking_complete(self) -> None:
+        request = _fake_request()
+        fake_client = FakeOdooClient()
+        fake_client.records["sale.order"] = {
+            10: {
+                "id": 10,
+                "name": "S00010",
+                "partner_id": 20,
+                "partner_shipping_id": False,
+                "state": "draft",
+                "origin": "WhatsApp",
+            }
+        }
+        fake_client.records["res.partner"] = {
+            20: {
+                "id": 20,
+                "name": "Cliente Demo",
+                "email": "demo@example.com",
+                "phone": "3001234567",
+                "mobile": "3001234567",
+                "street": "Calle 1",
+                "city": "Montevideo",
+                "zip": "11000",
+            }
+        }
+        with patch("app.mcp_server._client_from_instance", return_value=fake_client):
+            result = validar_y_preparar_confirmacion_whatsapp(order_id=10, request=request)
+
+        self.assertTrue(result["success"])
+        self.assertTrue(result["can_confirm"])
+        self.assertEqual(result["missing_fields"], [])
+        self.assertTrue(any(call[1] == "message_post" for call in fake_client.calls))
 
     def test_consultar_estado_pedido_returns_results(self) -> None:
         request = _fake_request()
